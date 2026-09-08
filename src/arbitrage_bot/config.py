@@ -36,6 +36,7 @@ class Settings:
     nonkyc_secret: str = os.getenv("NONKYC_SECRET", "")
     max_book_age_seconds: float = _float("MAX_BOOK_AGE_SECONDS", 2)
     max_hedge_slippage_bps: float = _float("MAX_HEDGE_SLIPPAGE_BPS", 75)
+    protective_price_level: int = int(os.getenv("PROTECTIVE_PRICE_LEVEL", "3"))
     trade_cooldown_seconds: float = _float("TRADE_COOLDOWN_SECONDS", 30)
     rearm_edge_bps: float = _float("REARM_EDGE_BPS", 10)
     pair: str = os.getenv("ARB_PAIR", "mexc-nonkyc").lower()

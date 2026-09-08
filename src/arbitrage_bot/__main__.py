@@ -60,7 +60,10 @@ async def run(pair_override: str | None = None):
         raise RuntimeError(f"LIVE_TRADING=true requires API keys for: {', '.join(exchange_ids)}")
     logging.info("exchange pair: %s ↔ %s", *exchange_ids)
     market = PublicMarketData(settings.timeout_seconds, credentials, exchange_ids)
-    executor = Executor(market, settings.order_timeout_seconds, Decimal(str(settings.max_hedge_slippage_bps)))
+    executor = Executor(
+        market, settings.order_timeout_seconds, Decimal(str(settings.max_hedge_slippage_bps)),
+        settings.protective_price_level, settings.orderbook_limit,
+    )
     trade_gate = TradeGate(settings.trade_cooldown_seconds, Decimal(str(settings.rearm_edge_bps)))
     try:
         await market.load_markets()
@@ -106,7 +109,11 @@ async def run(pair_override: str | None = None):
                     if empty_books:
                         logging.info("%s no actionable spread: empty order book on %s", symbol, ",".join(empty_books))
                         continue
-                    opportunities = find_opportunities(books[0], books[1], Decimal(str(settings.max_notional_quote)), fees_by_symbol[symbol], Decimal(str(settings.slippage_buffer_bps)))
+                    opportunities = find_opportunities(
+                        books[0], books[1], Decimal(str(settings.max_notional_quote)),
+                        fees_by_symbol[symbol], Decimal(str(settings.slippage_buffer_bps)),
+                        settings.protective_price_level,
+                    )
                     for candidate in opportunities:
                         if candidate.net_edge_bps > Decimal(str(settings.max_net_edge_bps)):
                             logging.warning("REJECT %s buy=%s sell=%s implausible net_edge=%.2f bps cap=%.2f bps", symbol, candidate.buy_exchange, candidate.sell_exchange, candidate.net_edge_bps, settings.max_net_edge_bps)

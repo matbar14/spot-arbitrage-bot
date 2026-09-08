@@ -182,7 +182,7 @@ class NonKycExchange:
         created = await self._request("POST", "/createorder", body=body, private=True)
         order_id = self._id(created)
         if params.get("timeInForce") == "IOC":
-            # NonKYC REST has no native IOC. Its official example creates then cancels.
+            # Kept for API compatibility. The production executor does not use this path.
             await self.cancel_order(order_id, symbol)
         return await self.fetch_order(order_id, symbol)
 

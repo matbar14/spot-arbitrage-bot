@@ -13,10 +13,19 @@ class ExecutionError(RuntimeError):
 
 
 class Executor:
-    def __init__(self, market: PublicMarketData, timeout: float, max_hedge_slippage_bps: Decimal):
+    def __init__(
+        self,
+        market: PublicMarketData,
+        timeout: float,
+        max_hedge_slippage_bps: Decimal,
+        protective_price_level: int = 3,
+        orderbook_limit: int = 50,
+    ):
         self.market = market
         self.timeout = timeout
         self.max_hedge_slippage_bps = max_hedge_slippage_bps
+        self.protective_price_level = max(1, protective_price_level)
+        self.orderbook_limit = max(self.protective_price_level, orderbook_limit)
 
     async def _balance(self, exchange: str, currency: str) -> Decimal:
         balance = await self.market.client(exchange).fetch_balance()
@@ -45,6 +54,22 @@ class Executor:
         if maximum is not None and cost > Decimal(str(maximum)):
             raise ExecutionError(f"{exchange}: order cost above maximum")
 
+    @staticmethod
+    def _aggressive_price(levels, quantity: Decimal) -> Decimal:
+        remaining = quantity
+        last_price = None
+        for price, available in levels:
+            used = min(remaining, available)
+            if used <= 0:
+                continue
+            last_price = price
+            remaining -= used
+            if remaining <= 0:
+                return price
+        if last_price is None:
+            raise ExecutionError("cannot determine executable price from order book")
+        return last_price
+
     async def execute(self, opportunity: Opportunity) -> dict:
         buy_symbol = self.market.market_symbol(opportunity.buy_exchange, opportunity.symbol)
         sell_symbol = self.market.market_symbol(opportunity.sell_exchange, opportunity.symbol)
@@ -54,9 +79,21 @@ class Executor:
             raise ExecutionError("both exchanges must support createOrder")
         if not buy_client.has.get("fetchOrder") or not sell_client.has.get("fetchOrder"):
             raise ExecutionError("both exchanges must support fetchOrder")
+        fresh_buy_book, fresh_sell_book = await asyncio.gather(
+            self.market.fetch(opportunity.buy_exchange, opportunity.symbol, self.orderbook_limit),
+            self.market.fetch(opportunity.sell_exchange, opportunity.symbol, self.orderbook_limit),
+        )
+        if not fresh_buy_book.asks or not fresh_sell_book.bids:
+            raise ExecutionError("cannot execute: fresh executable levels are missing")
         amount = self._amount(opportunity.buy_exchange, buy_symbol, opportunity.quantity)
-        buy_price = Decimal(buy_client.price_to_precision(buy_symbol, float(opportunity.buy_price)))
-        sell_price = Decimal(sell_client.price_to_precision(sell_symbol, float(opportunity.sell_price)))
+        if not getattr(buy_client, "native_ioc", False):
+            amount = min(amount, fresh_buy_book.asks[0][1])
+            amount = self._amount(opportunity.buy_exchange, buy_symbol, amount)
+            buy_level = fresh_buy_book.asks[min(self.protective_price_level - 1, len(fresh_buy_book.asks) - 1)][0]
+        if not getattr(sell_client, "native_ioc", False):
+            amount = min(amount, fresh_sell_book.bids[0][1])
+            amount = self._amount(opportunity.sell_exchange, sell_symbol, amount)
+            sell_level = fresh_sell_book.bids[min(self.protective_price_level - 1, len(fresh_sell_book.bids) - 1)][0]
         quote_free, base_free = await asyncio.gather(
             self._balance(opportunity.buy_exchange, quote), self._balance(opportunity.sell_exchange, base)
         )
@@ -64,14 +101,22 @@ class Executor:
         amount = min(amount, quote_free / buy_unit_cost, base_free)
         amount = self._amount(opportunity.buy_exchange, buy_symbol, amount)
         amount = self._amount(opportunity.sell_exchange, sell_symbol, amount)
+
+        if getattr(buy_client, "native_ioc", False):
+            buy_level = self._aggressive_price(fresh_buy_book.asks, amount)
+        buy_price = Decimal(buy_client.price_to_precision(buy_symbol, float(buy_level)))
+        if getattr(sell_client, "native_ioc", False):
+            sell_level = self._aggressive_price(fresh_sell_book.bids, amount)
+        sell_price = Decimal(sell_client.price_to_precision(sell_symbol, float(sell_level)))
         self._cost(opportunity.buy_exchange, buy_symbol, amount, buy_price)
         self._cost(opportunity.sell_exchange, sell_symbol, amount, sell_price)
         if quote_free < amount * buy_price or base_free < amount:
             raise ExecutionError("insufficient pre-trade balance")
-        params = {"timeInForce": "IOC"}
+        buy_params = {"timeInForce": "IOC"} if getattr(buy_client, "native_ioc", False) else {}
+        sell_params = {"timeInForce": "IOC"} if getattr(sell_client, "native_ioc", False) else {}
         orders = await asyncio.gather(
-            buy_client.create_order(buy_symbol, "limit", "buy", float(amount), float(buy_price), params),
-            sell_client.create_order(sell_symbol, "limit", "sell", float(amount), float(sell_price), params),
+            buy_client.create_order(buy_symbol, "limit", "buy", float(amount), float(buy_price), buy_params),
+            sell_client.create_order(sell_symbol, "limit", "sell", float(amount), float(sell_price), sell_params),
             return_exceptions=True,
         )
         states = await asyncio.gather(
@@ -118,7 +163,8 @@ class Executor:
         amount = self._amount(exchange, symbol, abs(residual))
         price = Decimal(client.price_to_precision(symbol, float(reference * multiplier)))
         log.error("hedging residual: %s %s %s", side, amount, symbol)
-        order = await client.create_order(symbol, "limit", side, float(amount), float(price), {"timeInForce": "IOC"})
+        params = {"timeInForce": "IOC"} if getattr(client, "native_ioc", False) else {}
+        order = await client.create_order(symbol, "limit", side, float(amount), float(price), params)
         state = await self._resolve(exchange, symbol, order)
         if isinstance(state, Exception) or Decimal(str(state.get("filled", 0) or 0)) < amount:
             raise ExecutionError(f"residual hedge incomplete: {state}")

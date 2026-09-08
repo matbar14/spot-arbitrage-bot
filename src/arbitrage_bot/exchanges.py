@@ -35,7 +35,9 @@ class PublicMarketData:
             options = {"enableRateLimit": True, "timeout": int(timeout * 1000)}
             if key and secret:
                 options.update({"apiKey": key, "secret": secret})
-            self.clients[name] = factory(options)
+            client = factory(options)
+            client.native_ioc = name == "mexc"
+            self.clients[name] = client
 
     async def close(self):
         await asyncio.gather(*(client.close() for client in self.clients.values()), return_exceptions=True)
