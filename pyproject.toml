@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "spot-arbitrage-bot"
 version = "0.1.0"
-description = "Spot arbitrage trader for MEXC and NonKYC"
+description = "Experimental, pre-funded spot arbitrage trader for MEXC, NonKYC and XeggeX"
 requires-python = ">=3.11"
 dependencies = ["ccxt>=4.5", "python-dotenv>=1.0"]
 

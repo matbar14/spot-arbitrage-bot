@@ -1,4 +1,5 @@
 import asyncio
+import argparse
 import logging
 import os
 import sys
@@ -34,49 +35,84 @@ handler = logging.StreamHandler()
 handler.setFormatter(ColorFormatter())
 logging.basicConfig(level=logging.INFO, handlers=[handler])
 
-async def run():
+SUPPORTED_PAIRS = ("mexc-nonkyc", "mexc-xeggex", "nonkyc-xeggex")
+
+
+def parse_pair(value: str) -> tuple[str, str]:
+    normalized = value.lower().replace("↔", "-").replace("–", "-")
+    if normalized not in SUPPORTED_PAIRS:
+        raise ValueError(f"unsupported pair {value}; choose one of: {', '.join(SUPPORTED_PAIRS)}")
+    return tuple(normalized.split("-"))
+
+
+async def run(pair_override: str | None = None):
     settings = Settings()
-    credentials = {"mexc": (settings.mexc_api_key, settings.mexc_secret), "nonkyc": (settings.nonkyc_api_key, settings.nonkyc_secret)}
-    if settings.live_trading and not all(all(credentials[name]) for name in credentials):
-        raise RuntimeError("LIVE_TRADING=true requires API keys for both exchanges")
-    market = PublicMarketData(settings.timeout_seconds, credentials)
+    try:
+        exchange_ids = parse_pair(pair_override or settings.pair)
+    except ValueError as exc:
+        raise RuntimeError(str(exc)) from exc
+    credentials = {
+        "mexc": (settings.mexc_api_key, settings.mexc_secret),
+        "nonkyc": (settings.nonkyc_api_key, settings.nonkyc_secret),
+        "xeggex": (settings.xeggex_api_key, settings.xeggex_secret),
+    }
+    if settings.live_trading and not all(all(credentials[name]) for name in exchange_ids):
+        raise RuntimeError(f"LIVE_TRADING=true requires API keys for: {', '.join(exchange_ids)}")
+    logging.info("exchange pair: %s ↔ %s", *exchange_ids)
+    market = PublicMarketData(settings.timeout_seconds, credentials, exchange_ids)
     executor = Executor(market, settings.order_timeout_seconds, Decimal(str(settings.max_hedge_slippage_bps)))
     trade_gate = TradeGate(settings.trade_cooldown_seconds, Decimal(str(settings.rearm_edge_bps)))
     try:
         await market.load_markets()
-        active_symbol_list = []
-        for symbol in settings.symbols:
-            try:
-                market.market_symbol("mexc", symbol)
-                market.market_symbol("nonkyc", symbol)
-                active_symbol_list.append(symbol)
-            except ValueError:
-                continue
-        active_symbols = tuple(active_symbol_list)
-        skipped_symbols = tuple(symbol for symbol in settings.symbols if symbol not in active_symbols)
+        if settings.symbols == ("ALL",):
+            active_symbols = market.common_symbols(exchange_ids, settings.quote_currency, settings.max_symbols)
+        else:
+            active_symbol_list = []
+            for symbol in settings.symbols:
+                try:
+                    for exchange in exchange_ids:
+                        market.market_symbol(exchange, symbol)
+                    active_symbol_list.append(market.market_symbol(exchange_ids[0], symbol))
+                except ValueError:
+                    continue
+            active_symbols = tuple(active_symbol_list)
+        skipped_symbols = tuple(symbol for symbol in settings.symbols if symbol != "ALL" and symbol not in active_symbols)
         if skipped_symbols:
-            logging.warning("SKIP unsupported on both exchanges: %s", ",".join(skipped_symbols))
+            logging.warning("SKIP unavailable on selected exchange pair: %s", ",".join(skipped_symbols))
         if not active_symbols:
             raise RuntimeError("none of the configured symbols is active on both exchanges")
+        logging.info("common active %s spot pairs: %d", settings.quote_currency, len(active_symbols))
         fees_by_symbol = {}
         for symbol in active_symbols:
-            mexc_symbol = market.market_symbol("mexc", symbol)
-            fees_by_symbol[symbol] = {
-                "mexc": await resolve_mexc_taker_fee(
-                    market.client("mexc"), mexc_symbol,
-                    Decimal(str(settings.mexc_fee_bps)) if settings.mexc_fee_bps is not None else None,
-                    live=settings.live_trading, auto_fetch=settings.auto_fetch_mexc_fee,
-                ),
-                "nonkyc": Decimal(str(settings.nonkyc_fee_bps)),
-            }
-            logging.info("fees %s: MEXC taker=%.2f bps, NonKYC manual=%.2f bps", symbol, fees_by_symbol[symbol]["mexc"], fees_by_symbol[symbol]["nonkyc"])
+            fee_values = {}
+            for exchange in exchange_ids:
+                if exchange == "mexc":
+                    fee_values[exchange] = await resolve_mexc_taker_fee(
+                        market.client(exchange), market.market_symbol(exchange, symbol),
+                        Decimal(str(settings.mexc_fee_bps)) if settings.mexc_fee_bps is not None else None,
+                        live=settings.live_trading, auto_fetch=settings.auto_fetch_mexc_fee,
+                    )
+                elif exchange == "nonkyc":
+                    fee_values[exchange] = Decimal(str(settings.nonkyc_fee_bps))
+                else:
+                    fee_values[exchange] = Decimal(str(settings.xeggex_fee_bps))
+            fees_by_symbol[symbol] = fee_values
+            logging.info("fees %s: %s", symbol, ", ".join(f"{name}={value:.2f} bps" for name, value in fee_values.items()))
         while True:
             for symbol in active_symbols:
                 try:
-                    mexc, nonkyc = await asyncio.gather(market.fetch("mexc", symbol, settings.orderbook_limit), market.fetch("nonkyc", symbol, settings.orderbook_limit))
-                    opportunities = find_opportunities(mexc, nonkyc, Decimal(str(settings.max_notional_quote)), fees_by_symbol[symbol], Decimal(str(settings.slippage_buffer_bps)))
+                    books = await asyncio.gather(*(market.fetch(exchange, symbol, settings.orderbook_limit) for exchange in exchange_ids))
+                    empty_books = tuple(book.exchange for book in books if not book.bids or not book.asks)
+                    if empty_books:
+                        logging.info("%s no actionable spread: empty order book on %s", symbol, ",".join(empty_books))
+                        continue
+                    opportunities = find_opportunities(books[0], books[1], Decimal(str(settings.max_notional_quote)), fees_by_symbol[symbol], Decimal(str(settings.slippage_buffer_bps)))
                     for candidate in opportunities:
-                        logging.info("CHECK %s buy=%s sell=%s net_edge=%.2f bps profit≈%s", symbol, candidate.buy_exchange, candidate.sell_exchange, candidate.net_edge_bps, candidate.estimated_profit)
+                        if candidate.net_edge_bps > Decimal(str(settings.max_net_edge_bps)):
+                            logging.warning("REJECT %s buy=%s sell=%s implausible net_edge=%.2f bps cap=%.2f bps", symbol, candidate.buy_exchange, candidate.sell_exchange, candidate.net_edge_bps, settings.max_net_edge_bps)
+                        else:
+                            logging.info("CHECK %s buy=%s sell=%s net_edge=%.2f bps profit≈%s", symbol, candidate.buy_exchange, candidate.sell_exchange, candidate.net_edge_bps, candidate.estimated_profit)
+                    opportunities = [candidate for candidate in opportunities if candidate.net_edge_bps <= Decimal(str(settings.max_net_edge_bps))]
                     opportunity = max(opportunities, key=lambda candidate: candidate.net_edge_bps, default=None)
                     trade_gate.observe(symbol, opportunity.net_edge_bps if opportunity else None)
                     is_fresh = opportunity and (datetime.now(timezone.utc) - opportunity.observed_at).total_seconds() <= settings.max_book_age_seconds
@@ -104,9 +140,12 @@ async def run():
     finally:
         await market.close()
 
-def main():
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="Spot arbitrage monitor/trader")
+    parser.add_argument("--pair", choices=SUPPORTED_PAIRS, help="exchange pair, e.g. mexc-xeggex (overrides ARB_PAIR)")
+    args = parser.parse_args(argv)
     try:
-        asyncio.run(run())
+        asyncio.run(run(args.pair))
     except KeyboardInterrupt:
         logging.info("Остановлено пользователем. Открытые запросы закрыты.")
 

@@ -24,7 +24,8 @@ class StrategyTests(unittest.TestCase):
         mexc = book("mexc", [(Decimal("101"), Decimal("0.5"))], [(Decimal("100"), Decimal("0.5"))])
         nonkyc = book("nonkyc", [(Decimal("99"), Decimal("0.5"))], [(Decimal("98"), Decimal("0.5"))])
         result = find_opportunity(mexc, nonkyc, Decimal("100"), {"mexc": Decimal("0"), "nonkyc": Decimal("0")}, Decimal("0"))
-        self.assertIsNone(result)
+        self.assertIsNotNone(result)
+        self.assertEqual(result.quantity, Decimal("0.5"))
 
     def test_evaluates_both_directions(self):
         mexc = book("mexc", [(Decimal("101"), Decimal("2"))], [(Decimal("100"), Decimal("2"))])

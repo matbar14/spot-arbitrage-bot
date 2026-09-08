@@ -14,9 +14,12 @@ def _optional_float(name: str) -> float | None:
 @dataclass(frozen=True)
 class Settings:
     live_trading: bool = os.getenv("LIVE_TRADING", "false").lower() == "true"
-    symbols: tuple[str, ...] = tuple(s.strip().upper() for s in os.getenv("SYMBOLS", "BTCUSDT,ETHUSDT,XRPUSDT,SOLUSDT,DOGEUSDT,LTCUSDT,BCHUSDT,ADAUSDT,TRXUSDT,LINKUSDT,AVAXUSDT,DOTUSDT").split(",") if s.strip())
+    symbols: tuple[str, ...] = tuple(s.strip().upper() for s in os.getenv("SYMBOLS", "ALL").split(",") if s.strip())
+    quote_currency: str = os.getenv("QUOTE_CURRENCY", "USDT").upper()
+    max_symbols: int = int(os.getenv("MAX_SYMBOLS", "0"))
     max_notional_quote: float = _float("MAX_NOTIONAL_QUOTE", 100)
     min_net_edge_bps: float = _float("MIN_NET_EDGE_BPS", 35)
+    max_net_edge_bps: float = _float("MAX_NET_EDGE_BPS", 5000)
     poll_interval_seconds: float = _float("POLL_INTERVAL_SECONDS", 3)
     orderbook_limit: int = int(os.getenv("ORDERBOOK_LIMIT", "10"))
     mexc_fee_bps: float | None = _optional_float("MEXC_FEE_BPS")
@@ -35,3 +38,7 @@ class Settings:
     max_hedge_slippage_bps: float = _float("MAX_HEDGE_SLIPPAGE_BPS", 75)
     trade_cooldown_seconds: float = _float("TRADE_COOLDOWN_SECONDS", 30)
     rearm_edge_bps: float = _float("REARM_EDGE_BPS", 10)
+    pair: str = os.getenv("ARB_PAIR", "mexc-nonkyc").lower()
+    xeggex_fee_bps: float = _float("XEGGEX_FEE_BPS", 20)
+    xeggex_api_key: str = os.getenv("XEGGEX_API_KEY", "")
+    xeggex_secret: str = os.getenv("XEGGEX_SECRET", "")

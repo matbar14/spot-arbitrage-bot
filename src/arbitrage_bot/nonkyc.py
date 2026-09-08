@@ -24,6 +24,7 @@ class NonKycExchange:
     id = "nonkyc"
     name = "NonKYC"
     api_url = "https://api.nonkyc.io/api/v2"
+    error_name = "NonKYC"
 
     def __init__(self, options: dict[str, Any]):
         self.api_key = options.get("apiKey", "")
@@ -68,11 +69,11 @@ class NonKycExchange:
         signature = hmac.new(self.secret.encode(), f"{self.api_key}{payload}{nonce}".encode(), hashlib.sha256).hexdigest()
         return {"X-API-KEY": self.api_key, "X-API-NONCE": nonce, "X-API-SIGN": signature, "Content-Type": "application/json"}
 
-    async def _request(self, method: str, path: str, *, params: dict | None = None, body: dict | None = None, private: bool = False):
+    async def _request(self, method: str, path: str, *, params: dict | None = None, body: dict | None = None, private: bool = False, base_url: str | None = None):
         await self._throttle()
         query = f"?{urlencode(params)}" if params else ""
         encoded = json.dumps(body, separators=(",", ":")) if body is not None else ""
-        url = f"{self.api_url}{path}{query}"
+        url = f"{base_url or self.api_url}{path}{query}"
         headers = self._headers(f"{url}{encoded}") if private else {}
         async with self._get_session().request(method, url, data=encoded or None, headers=headers) as response:
             text = await response.text()
@@ -81,9 +82,9 @@ class NonKycExchange:
             except json.JSONDecodeError as exc:
                 raise NonKycError(f"NonKYC returned non-JSON HTTP {response.status}") from exc
             if response.status >= 400:
-                raise NonKycError(f"NonKYC HTTP {response.status}: {data}")
+                raise NonKycError(f"{self.error_name} HTTP {response.status}: {data}")
             if isinstance(data, dict) and data.get("error"):
-                raise NonKycError(f"NonKYC error: {data['error']}")
+                raise NonKycError(f"{self.error_name} error: {data['error']}")
             return data
 
     async def load_markets(self):
