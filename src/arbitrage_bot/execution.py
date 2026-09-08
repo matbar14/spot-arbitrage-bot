@@ -131,7 +131,11 @@ class Executor:
         residual = buy_filled - sell_filled
         if residual:
             await self._hedge_residual(opportunity, residual, buy_symbol, sell_symbol)
-        return {"buy": states[0], "sell": states[1], "hedged_residual": residual}
+        executed_notional = max(buy_filled, sell_filled) * opportunity.buy_price
+        return {
+            "buy": states[0], "sell": states[1], "hedged_residual": residual,
+            "executed_notional": executed_notional,
+        }
 
     async def _resolve(self, exchange: str, symbol: str, result) -> dict:
         if isinstance(result, Exception):

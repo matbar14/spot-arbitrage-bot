@@ -10,7 +10,7 @@ from .exchanges import PublicMarketData
 from .strategy import find_opportunities
 from .execution import Executor, ExecutionError
 from .fees import FeeConfigurationError, resolve_mexc_taker_fee
-from .trade_gate import TradeGate
+from .trade_gate import NotionalTracker, TradeGate
 
 class ColorFormatter(logging.Formatter):
     colors = {
@@ -65,6 +65,11 @@ async def run(pair_override: str | None = None):
         settings.protective_price_level, settings.orderbook_limit,
     )
     trade_gate = TradeGate(settings.trade_cooldown_seconds, Decimal(str(settings.rearm_edge_bps)))
+    notional_tracker = NotionalTracker(
+        Decimal(str(settings.max_session_notional)),
+        Decimal(str(settings.max_total_session_notional)),
+        Decimal(str(settings.rearm_edge_bps)),
+    )
     try:
         await market.load_markets()
         if settings.symbols == ("ALL",):
@@ -109,8 +114,20 @@ async def run(pair_override: str | None = None):
                     if empty_books:
                         logging.info("%s no actionable spread: empty order book on %s", symbol, ",".join(empty_books))
                         continue
+                    edge_budget = notional_tracker.remaining(symbol)
+                    if edge_budget <= 0:
+                        logging.info(
+                            "%s accumulation limit reached: pair=%.2f total=%.2f USDT",
+                            symbol, settings.max_session_notional, settings.max_total_session_notional,
+                        )
+                        continue
+                    slice_budget = min(
+                        Decimal(str(settings.max_notional_quote)),
+                        Decimal(str(settings.max_slice_notional)),
+                        edge_budget,
+                    )
                     opportunities = find_opportunities(
-                        books[0], books[1], Decimal(str(settings.max_notional_quote)),
+                        books[0], books[1], slice_budget,
                         fees_by_symbol[symbol], Decimal(str(settings.slippage_buffer_bps)),
                         settings.protective_price_level,
                     )
@@ -121,17 +138,33 @@ async def run(pair_override: str | None = None):
                             logging.info("CHECK %s buy=%s sell=%s net_edge=%.2f bps profit≈%s", symbol, candidate.buy_exchange, candidate.sell_exchange, candidate.net_edge_bps, candidate.estimated_profit)
                     opportunities = [candidate for candidate in opportunities if candidate.net_edge_bps <= Decimal(str(settings.max_net_edge_bps))]
                     opportunity = max(opportunities, key=lambda candidate: candidate.net_edge_bps, default=None)
-                    trade_gate.observe(symbol, opportunity.net_edge_bps if opportunity else None)
+                    edge_bps = opportunity.net_edge_bps if opportunity else None
+                    trade_gate.observe(symbol, edge_bps)
+                    notional_tracker.observe(symbol, edge_bps)
+                    if notional_tracker.remaining(symbol) <= 0:
+                        logging.info(
+                            "%s accumulation limit reached: pair=%.2f total=%.2f USDT",
+                            symbol, settings.max_session_notional, settings.max_total_session_notional,
+                        )
+                        continue
                     is_fresh = opportunity and (datetime.now(timezone.utc) - opportunity.observed_at).total_seconds() <= settings.max_book_age_seconds
+                    can_start = bool(opportunity and trade_gate.can_enter(symbol, opportunity.net_edge_bps))
+                    can_continue = bool(
+                        opportunity
+                        and notional_tracker.used(symbol) > 0
+                        and trade_gate.can_continue(symbol, opportunity.net_edge_bps)
+                    )
+                    can_trade = can_start or can_continue
                     if opportunity and is_fresh and opportunity.net_edge_bps >= Decimal(str(settings.min_net_edge_bps)):
-                        if not trade_gate.can_enter(symbol, opportunity.net_edge_bps):
+                        if not can_trade:
                             logging.info("%s entry blocked: cooldown %.1fs or waiting for spread reset", symbol, trade_gate.remaining_cooldown(symbol))
                         else:
-                            logging.info("🚨 ARBITRAGE %s buy=%s sell=%s qty=%s edge=%.2f bps profit≈%s", symbol, opportunity.buy_exchange, opportunity.sell_exchange, opportunity.quantity, opportunity.net_edge_bps, opportunity.estimated_profit, extra={"arbitrage": True})
-                        if settings.live_trading and trade_gate.can_enter(symbol, opportunity.net_edge_bps):
+                            logging.info("🚨 ARBITRAGE %s buy=%s sell=%s qty=%s edge=%.2f bps profit≈%s tranche≈%.2f/%0.2f USDT", symbol, opportunity.buy_exchange, opportunity.sell_exchange, opportunity.quantity, opportunity.net_edge_bps, opportunity.estimated_profit, slice_budget, settings.max_session_notional, extra={"arbitrage": True})
+                        if settings.live_trading and can_trade:
                             try:
                                 result = await executor.execute(opportunity)
                                 trade_gate.mark_completed(symbol)
+                                notional_tracker.record(symbol, Decimal(str(result.get("executed_notional", 0))))
                                 logging.info("FILLED %s: buy=%s sell=%s", symbol, result["buy"].get("filled"), result["sell"].get("filled"))
                             except ExecutionError as exc:
                                 logging.error("TRADE ABORTED %s: %s", symbol, exc)
