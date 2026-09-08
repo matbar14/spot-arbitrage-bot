@@ -1,0 +1,37 @@
+from dataclasses import dataclass
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+def _float(name: str, default: float) -> float:
+    return float(os.getenv(name, default))
+
+def _optional_float(name: str) -> float | None:
+    value = os.getenv(name, "").strip()
+    return float(value) if value else None
+
+@dataclass(frozen=True)
+class Settings:
+    live_trading: bool = os.getenv("LIVE_TRADING", "false").lower() == "true"
+    symbols: tuple[str, ...] = tuple(s.strip().upper() for s in os.getenv("SYMBOLS", "BTCUSDT,ETHUSDT,XRPUSDT,SOLUSDT,DOGEUSDT,LTCUSDT,BCHUSDT,ADAUSDT,TRXUSDT,LINKUSDT,AVAXUSDT,DOTUSDT").split(",") if s.strip())
+    max_notional_quote: float = _float("MAX_NOTIONAL_QUOTE", 100)
+    min_net_edge_bps: float = _float("MIN_NET_EDGE_BPS", 35)
+    poll_interval_seconds: float = _float("POLL_INTERVAL_SECONDS", 3)
+    orderbook_limit: int = int(os.getenv("ORDERBOOK_LIMIT", "10"))
+    mexc_fee_bps: float | None = _optional_float("MEXC_FEE_BPS")
+    nonkyc_fee_bps: float = _float("NONKYC_FEE_BPS", 20)
+    auto_fetch_mexc_fee: bool = os.getenv("AUTO_FETCH_MEXC_FEE", "true").lower() == "true"
+    slippage_buffer_bps: float = _float("SLIPPAGE_BUFFER_BPS", 10)
+    timeout_seconds: float = _float("REQUEST_TIMEOUT_SECONDS", 5)
+    max_open_orders: int = int(os.getenv("MAX_OPEN_ORDERS", "2"))
+    order_timeout_seconds: float = _float("ORDER_TIMEOUT_SECONDS", 2)
+    max_daily_loss_quote: float = _float("MAX_DAILY_LOSS_QUOTE", 25)
+    mexc_api_key: str = os.getenv("MEXC_API_KEY", "")
+    mexc_secret: str = os.getenv("MEXC_SECRET", "")
+    nonkyc_api_key: str = os.getenv("NONKYC_API_KEY", "")
+    nonkyc_secret: str = os.getenv("NONKYC_SECRET", "")
+    max_book_age_seconds: float = _float("MAX_BOOK_AGE_SECONDS", 2)
+    max_hedge_slippage_bps: float = _float("MAX_HEDGE_SLIPPAGE_BPS", 75)
+    trade_cooldown_seconds: float = _float("TRADE_COOLDOWN_SECONDS", 30)
+    rearm_edge_bps: float = _float("REARM_EDGE_BPS", 10)
