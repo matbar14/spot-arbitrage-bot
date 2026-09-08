@@ -104,5 +104,12 @@ async def run():
     finally:
         await market.close()
 
+def main():
+    try:
+        asyncio.run(run())
+    except KeyboardInterrupt:
+        logging.info("Остановлено пользователем. Открытые запросы закрыты.")
+
+
 if __name__ == "__main__":
-    asyncio.run(run())
+    main()
