@@ -28,9 +28,21 @@ class ParsePairTests(unittest.TestCase):
 class RegistryTests(unittest.TestCase):
     def test_expected_exchanges_registered(self):
         for exchange_id in ("mexc", "nonkyc", "xeggex", "xt", "lbank", "bingx",
-                            "htx", "gate", "bitrue", "whitebit"):
+                            "htx", "gate", "bitrue", "whitebit",
+                            "kucoin", "bybit", "bitget"):
             self.assertIn(exchange_id, EXCHANGE_REGISTRY)
             self.assertIn("default_fee_bps", EXCHANGE_REGISTRY[exchange_id])
+
+    def test_book_limit_coercion(self):
+        from arbitrage_bot.exchanges import _coerce_book_limit
+        kucoin_spec = {"book_limits": (20, 100)}
+        self.assertEqual(_coerce_book_limit(kucoin_spec, 10), 20)
+        self.assertEqual(_coerce_book_limit(kucoin_spec, 20), 20)
+        self.assertEqual(_coerce_book_limit(kucoin_spec, 50), 100)
+        self.assertEqual(_coerce_book_limit(kucoin_spec, 100), 100)
+        self.assertEqual(_coerce_book_limit(kucoin_spec, 200), 100)
+        self.assertEqual(_coerce_book_limit({}, 10), 10)
+        self.assertEqual(_coerce_book_limit({"book_limits": (20, 100)}, 20), 20)
 
     def test_legacy_fee_fields_take_precedence(self):
         settings = Settings()

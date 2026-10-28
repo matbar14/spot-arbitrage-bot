@@ -28,11 +28,26 @@ EXCHANGE_REGISTRY: dict[str, dict[str, Any]] = {
     "gate":     {"factory": getattr(ccxt, "gate", None),      "default_fee_bps": Decimal("20")},
     "bitrue":   {"factory": getattr(ccxt, "bitrue", None),    "default_fee_bps": Decimal("30")},
     "whitebit": {"factory": getattr(ccxt, "whitebit", None),  "default_fee_bps": Decimal("10")},
+    "kucoin":   {"factory": getattr(ccxt, "kucoin", None),    "default_fee_bps": Decimal("10"), "book_limits": (20, 100)},
+    "bybit":    {"factory": getattr(ccxt, "bybit", None),     "default_fee_bps": Decimal("10")},
+    "bitget":   {"factory": getattr(ccxt, "bitget", None),    "default_fee_bps": Decimal("10")},
 }
 
 
 def supported_exchange_ids() -> tuple[str, ...]:
     return tuple(sorted(EXCHANGE_REGISTRY))
+
+def _coerce_book_limit(spec: dict[str, Any], limit: int) -> int:
+    """Clamp the requested depth size to what the venue actually accepts.
+
+    Some APIs only serve fixed depth sizes (e.g. KuCoin: 20 or 100 levels).
+    Exchanges without a "book_limits" entry accept any size.
+    """
+    allowed = spec.get("book_limits")
+    if not allowed or limit in allowed:
+        return limit
+    bigger = [size for size in allowed if size >= limit]
+    return min(bigger) if bigger else max(allowed)
 
 @dataclass(frozen=True)
 class Book:
@@ -73,7 +88,7 @@ class PublicMarketData:
         market_symbol = self.market_symbol(exchange, symbol)
         if market_symbol not in client.markets:
             raise ValueError(f"{exchange}: unsupported symbol {market_symbol}")
-        data = await client.fetch_order_book(market_symbol, limit)
+        data = await client.fetch_order_book(market_symbol, _coerce_book_limit(EXCHANGE_REGISTRY.get(exchange, {}), limit))
         return Book(exchange, symbol, _levels(data.get("bids", [])), _levels(data.get("asks", [])), datetime.now(timezone.utc))
 
     def client(self, exchange: str):
