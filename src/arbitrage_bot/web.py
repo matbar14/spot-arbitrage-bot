@@ -6,6 +6,7 @@ Launch with `python -m arbitrage_bot.web` and open http://127.0.0.1:8788.
 import asyncio
 import logging
 import os
+import re
 import threading
 import time
 import webbrowser
@@ -26,6 +27,10 @@ SNAPSHOT_MAX_ROWS = 1500
 PAPER_TRADES_MAX = 400       # хвост истории бумажных сделок
 PAPER_COOLDOWN_S = 300       # пауза между повторными входами в тот же symbol|buy|sell
 PAPER_MAX_PER_CYCLE = 2      # максимум виртуальных сделок за один скан-цикл
+# Leveraged-токены (ADA3S, AAVE3L, BTC5L…) котируются на разных биржах по-разному
+# и не переносятся между площадками — их «спреды» нереализуемы, в бумажную торговлю
+# их не берём, иначе статистика раздувается фантомными +40% сделками.
+LEVERAGED_TOKEN_RE = re.compile(r"\d[LS]$")
 
 
 def _dec(value, default: Decimal | None = None) -> Decimal | None:
@@ -420,6 +425,7 @@ class Session:
         row alone is not enough: the spread must survive a fresh fetch.
         """
         candidates = [row for row in rows if row["net_edge_bps"] >= self.live_min_edge_bps]
+        cap = float(self.settings.max_net_edge_bps)
         executed = 0
         now = time.monotonic()
         for row in candidates:
@@ -427,6 +433,9 @@ class Session:
                 break
             key = f"{row['symbol']}|{row['buy']}|{row['sell']}"
             if now - self._trade_cooldowns.get(key, float("-inf")) < PAPER_COOLDOWN_S:
+                continue
+            if LEVERAGED_TOKEN_RE.search(row["symbol"].split("/")[0]):
+                self._trade_cooldowns[key] = now  # нереализуемый инструмент — пропускаем целиком
                 continue
             try:
                 result = await self.calc({
@@ -443,6 +452,7 @@ class Session:
             if (
                 direction is None
                 or direction["net_edge_bps"] < self.live_min_edge_bps
+                or direction["net_edge_bps"] > cap  # аномальный edge = фантом/неликвидность
                 or not direction["net_profit"]
                 or direction["net_profit"] <= 0
                 or not direction.get("buy_cost_incl_fee")

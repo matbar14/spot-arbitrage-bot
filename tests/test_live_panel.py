@@ -141,6 +141,29 @@ class PaperExecutionTests(unittest.TestCase):
         asyncio.run(session._paper_execute([row]))
         self.assertEqual(session.paper_trades, [])
 
+    def test_leveraged_tokens_skipped(self):
+        session = make_session()
+        session.live_enabled = True
+        row = {"symbol": "ADA3S/USDT", "buy": "xt", "sell": "gate", "net_edge_bps": 500}
+        called = []
+
+        async def fake_calc(payload):
+            called.append(payload)
+            return calc_response(40.0, 400, buy="xt", sell="gate")
+
+        session.calc = fake_calc
+        asyncio.run(session._paper_execute([row]))
+        self.assertEqual(called, [])  # leveraged-токен даже не проверяется
+        self.assertEqual(session.paper_trades, [])
+
+    def test_implausible_edge_over_cap_rejected(self):
+        session = make_session()
+        session.live_enabled = True
+        row = {"symbol": "BTC/USDT", "buy": "mexc", "sell": "nonkyc", "net_edge_bps": 60}
+        session.calc = lambda payload: _async(calc_response(40.0, 4446))  # свежие стаканы дали аномалию
+        asyncio.run(session._paper_execute([row]))
+        self.assertEqual(session.paper_trades, [])  # кап max_net_edge_bps отсекает фантом
+
 
 def _async(value):
     async def inner():
