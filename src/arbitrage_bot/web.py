@@ -17,8 +17,8 @@ from aiohttp import web
 
 from .__main__ import parse_pair
 from .config import Settings
-from .exchanges import Book, PublicMarketData
-from .fees import resolve_mexc_taker_fee
+from .exchanges import Book, PublicMarketData, supported_exchange_ids
+from .fees import resolve_mexc_taker_fee, static_taker_fee_bps
 from .strategy import Opportunity, find_opportunities
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -131,12 +131,7 @@ class Session:
             self.cycles = 0
 
     def _credentials(self) -> dict[str, tuple[str, str]]:
-        s = self.settings
-        return {
-            "mexc": (s.mexc_api_key, s.mexc_secret),
-            "nonkyc": (s.nonkyc_api_key, s.nonkyc_secret),
-            "xeggex": (s.xeggex_api_key, s.xeggex_secret),
-        }
+        return self.settings.exchange_credentials()
 
     async def _load_symbols_and_fees(self) -> None:
         assert self.market is not None
@@ -164,10 +159,8 @@ class Session:
                         Decimal(str(self.settings.mexc_fee_bps)) if self.settings.mexc_fee_bps is not None else None,
                         live=False, auto_fetch=self.settings.auto_fetch_mexc_fee,
                     )
-                elif exchange == "nonkyc":
-                    values[exchange] = Decimal(str(self.settings.nonkyc_fee_bps))
                 else:
-                    values[exchange] = Decimal(str(self.settings.xeggex_fee_bps))
+                    values[exchange] = static_taker_fee_bps(self.settings, exchange)
             fees[symbol] = values
         self.fees_by_symbol = fees
 
@@ -250,6 +243,7 @@ class Session:
         s = self.settings
         return {
             "pair": self.pair_name,
+            "exchanges": list(supported_exchange_ids()),
             "running": self.running,
             "poll_interval": self.poll_interval,
             "max_symbols": self.max_symbols,
@@ -270,9 +264,12 @@ class Session:
                 "quote_currency": s.quote_currency,
             },
             "fees_default": {
-                "mexc": 5.0 if s.mexc_fee_bps is None else s.mexc_fee_bps,
-                "nonkyc": s.nonkyc_fee_bps,
-                "xeggex": s.xeggex_fee_bps,
+                exchange_id: (
+                    (5.0 if s.mexc_fee_bps is None else s.mexc_fee_bps)
+                    if exchange_id == "mexc"
+                    else float(static_taker_fee_bps(s, exchange_id))
+                )
+                for exchange_id in supported_exchange_ids()
             },
         }
 

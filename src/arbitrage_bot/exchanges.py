@@ -11,6 +11,29 @@ from .xeggex import XeggexExchange
 class ExchangeConfigurationError(RuntimeError):
     pass
 
+
+# Central registry: every exchange the bot can work with.
+# "factory" is None when the current ccxt build lacks the adapter — the
+# exchange stays listed but raises ExchangeConfigurationError on use.
+# "default_fee_bps" is the conservative dry-run taker fee estimate (VIP0),
+# overridable via <EXCHANGE_ID_UPPER>_FEE_BPS in the environment.
+EXCHANGE_REGISTRY: dict[str, dict[str, Any]] = {
+    "mexc":     {"factory": ccxt.mexc,                        "default_fee_bps": Decimal("5")},
+    "nonkyc":   {"factory": NonKycExchange,                   "default_fee_bps": Decimal("20")},
+    "xeggex":   {"factory": XeggexExchange,                   "default_fee_bps": Decimal("20")},
+    "xt":       {"factory": getattr(ccxt, "xt", None),        "default_fee_bps": Decimal("10")},
+    "lbank":    {"factory": getattr(ccxt, "lbank", None),     "default_fee_bps": Decimal("10")},
+    "bingx":    {"factory": getattr(ccxt, "bingx", None),     "default_fee_bps": Decimal("10")},
+    "htx":      {"factory": getattr(ccxt, "htx", None),       "default_fee_bps": Decimal("20")},
+    "gate":     {"factory": getattr(ccxt, "gate", None),      "default_fee_bps": Decimal("20")},
+    "bitrue":   {"factory": getattr(ccxt, "bitrue", None),    "default_fee_bps": Decimal("30")},
+    "whitebit": {"factory": getattr(ccxt, "whitebit", None),  "default_fee_bps": Decimal("10")},
+}
+
+
+def supported_exchange_ids() -> tuple[str, ...]:
+    return tuple(sorted(EXCHANGE_REGISTRY))
+
 @dataclass(frozen=True)
 class Book:
     exchange: str
@@ -25,10 +48,10 @@ def _levels(raw: list[Any]) -> list[tuple[Decimal, Decimal]]:
 class PublicMarketData:
     def __init__(self, timeout: float = 5, credentials: dict[str, tuple[str, str]] | None = None, exchange_ids: tuple[str, ...] = ("mexc", "nonkyc")):
         credentials = credentials or {}
-        factories = {"mexc": ccxt.mexc, "nonkyc": NonKycExchange, "xeggex": XeggexExchange}
         self.clients: dict[str, Any] = {}
         for name in exchange_ids:
-            factory = factories.get(name)
+            spec = EXCHANGE_REGISTRY.get(name)
+            factory = spec.get("factory") if spec else None
             if factory is None:
                 raise ExchangeConfigurationError(f"unsupported exchange adapter: {name}")
             key, secret = credentials.get(name, ("", ""))

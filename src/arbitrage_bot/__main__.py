@@ -6,10 +6,10 @@ import sys
 from datetime import datetime, timezone
 from decimal import Decimal
 from .config import Settings
-from .exchanges import PublicMarketData
+from .exchanges import PublicMarketData, EXCHANGE_REGISTRY, ExchangeConfigurationError
 from .strategy import find_opportunities
 from .execution import Executor, ExecutionError
-from .fees import FeeConfigurationError, resolve_mexc_taker_fee
+from .fees import FeeConfigurationError, resolve_mexc_taker_fee, static_taker_fee_bps
 from .trade_gate import NotionalTracker, TradeGate
 
 class ColorFormatter(logging.Formatter):
@@ -35,14 +35,15 @@ handler = logging.StreamHandler()
 handler.setFormatter(ColorFormatter())
 logging.basicConfig(level=logging.INFO, handlers=[handler])
 
-SUPPORTED_PAIRS = ("mexc-nonkyc", "mexc-xeggex", "nonkyc-xeggex")
+SUPPORTED_EXCHANGES = tuple(sorted(EXCHANGE_REGISTRY))
 
 
 def parse_pair(value: str) -> tuple[str, str]:
     normalized = value.lower().replace("↔", "-").replace("–", "-")
-    if normalized not in SUPPORTED_PAIRS:
-        raise ValueError(f"unsupported pair {value}; choose one of: {', '.join(SUPPORTED_PAIRS)}")
-    return tuple(normalized.split("-"))
+    parts = normalized.split("-")
+    if len(parts) != 2 or parts[0] == parts[1] or any(p not in EXCHANGE_REGISTRY for p in parts):
+        raise ValueError(f"unsupported pair {value}; exchanges: {', '.join(SUPPORTED_EXCHANGES)}")
+    return parts[0], parts[1]
 
 
 async def run(pair_override: str | None = None):
@@ -51,11 +52,7 @@ async def run(pair_override: str | None = None):
         exchange_ids = parse_pair(pair_override or settings.pair)
     except ValueError as exc:
         raise RuntimeError(str(exc)) from exc
-    credentials = {
-        "mexc": (settings.mexc_api_key, settings.mexc_secret),
-        "nonkyc": (settings.nonkyc_api_key, settings.nonkyc_secret),
-        "xeggex": (settings.xeggex_api_key, settings.xeggex_secret),
-    }
+    credentials = settings.exchange_credentials()
     if settings.live_trading and not all(all(credentials[name]) for name in exchange_ids):
         raise RuntimeError(f"LIVE_TRADING=true requires API keys for: {', '.join(exchange_ids)}")
     logging.info("exchange pair: %s ↔ %s", *exchange_ids)
@@ -100,10 +97,8 @@ async def run(pair_override: str | None = None):
                         Decimal(str(settings.mexc_fee_bps)) if settings.mexc_fee_bps is not None else None,
                         live=settings.live_trading, auto_fetch=settings.auto_fetch_mexc_fee,
                     )
-                elif exchange == "nonkyc":
-                    fee_values[exchange] = Decimal(str(settings.nonkyc_fee_bps))
                 else:
-                    fee_values[exchange] = Decimal(str(settings.xeggex_fee_bps))
+                    fee_values[exchange] = static_taker_fee_bps(settings, exchange)
             fees_by_symbol[symbol] = fee_values
             logging.info("fees %s: %s", symbol, ", ".join(f"{name}={value:.2f} bps" for name, value in fee_values.items()))
         while True:
@@ -182,7 +177,7 @@ async def run(pair_override: str | None = None):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Spot arbitrage monitor/trader")
-    parser.add_argument("--pair", choices=SUPPORTED_PAIRS, help="exchange pair, e.g. mexc-xeggex (overrides ARB_PAIR)")
+    parser.add_argument("--pair", help="exchange pair, e.g. mexc-xeggex (overrides ARB_PAIR)")
     args = parser.parse_args(argv)
     try:
         asyncio.run(run(args.pair))

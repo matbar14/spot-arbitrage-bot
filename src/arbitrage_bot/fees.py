@@ -17,6 +17,25 @@ class FeeConfigurationError(RuntimeError):
     pass
 
 
+def static_taker_fee_bps(settings: Any, exchange_id: str) -> Decimal:
+    """Taker fee (bps) for any registered exchange except MEXC.
+
+    Resolution order: explicit setting (<ID>_FEE_BPS / legacy fields),
+    then the conservative registry default. Raises FeeConfigurationError
+    when neither exists so misconfiguration never trades silently.
+    """
+    value = settings.exchange_fee_bps(exchange_id)
+    if value is not None:
+        return Decimal(str(value))
+    from .exchanges import EXCHANGE_REGISTRY
+    spec = EXCHANGE_REGISTRY.get(exchange_id)
+    if spec and spec.get("default_fee_bps") is not None:
+        return spec["default_fee_bps"]
+    raise FeeConfigurationError(
+        f"{exchange_id}: taker fee is not configured; set {exchange_id.upper()}_FEE_BPS"
+    )
+
+
 def _cached_taker_bps(client: Any) -> Decimal | None:
     try:
         return _fee_cache.get(client)

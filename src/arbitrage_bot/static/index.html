@@ -24,6 +24,9 @@ header h1 .dot{color:var(--accent)}
 .field label{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
 select,input{background:var(--bg);border:1px solid var(--border2);color:var(--text);border-radius:8px;padding:8px 10px;font-size:13px;outline:none}
 input:focus,select:focus{border-color:var(--accent)}
+.pair-selects{display:inline-flex;align-items:center;gap:6px}
+.pair-selects select{min-width:110px}
+.pair-arrow{color:var(--muted);font-size:13px}
 input[type=number]{width:110px;font-family:var(--mono)}
 button{background:var(--accent);border:none;color:#04120c;font-weight:600;border-radius:8px;padding:9px 16px;font-size:13px;cursor:pointer}
 button:hover{background:var(--accent2)}
@@ -94,11 +97,11 @@ tr.selected td{background:rgba(16,185,129,.12) !important}
 
 <div class="controls">
   <div class="field"><label>Связка бирж</label>
-    <select id="pair">
-      <option value="mexc-nonkyc">MEXC ↔ NonKYC</option>
-      <option value="mexc-xeggex">MEXC ↔ XeggeX</option>
-      <option value="nonkyc-xeggex">NonKYC ↔ XeggeX</option>
-    </select>
+    <span class="pair-selects">
+      <select id="pairA"></select>
+      <span class="pair-arrow">↔</span>
+      <select id="pairB"></select>
+    </span>
   </div>
   <div class="field"><label>Опрос, сек</label><input type="number" id="poll" min="2" step="1" value="5"></div>
   <div class="field"><label>Макс. пар (0=все)</label><input type="number" id="maxSymbols" min="0" step="1" value="0"></div>
@@ -186,12 +189,27 @@ function setBadge(){
 
 function renderSession(){
   setBadge();
+  buildPairOptions(session.exchanges, session.pair);
   $('poll').value = session.poll_interval;
   $('maxSymbols').value = session.max_symbols;
   $('stSymbols').textContent = session.symbols_count;
   $('symbolList').innerHTML = (session.symbols||[]).map(s=>`<option value="${esc(s)}">`).join('');
   buildFeeFields(session.pair, session.fees_default);
 }
+
+function buildPairOptions(exchanges, currentPair){
+  const list = Array.isArray(exchanges) && exchanges.length >= 2 ? exchanges : ['mexc','nonkyc','xeggex'];
+  for (const id of ['pairA','pairB']){
+    const sel = document.getElementById(id);
+    sel.innerHTML = list.map(ex=>`<option value="${esc(ex)}">${esc(ex.toUpperCase())}</option>`).join('');
+  }
+  const parts = String(currentPair||'').split('-');
+  const has = v=>list.includes(v);
+  $('pairA').value = has(parts[0]) ? parts[0] : list[0];
+  $('pairB').value = has(parts[1]) ? parts[1] : (list[1]||list[0]);
+}
+
+function currentPair(){ return $('pairA').value + '-' + $('pairB').value; }
 
 function buildFeeFields(pair, defaults){
   const exchanges = pair.split('-');
@@ -247,14 +265,14 @@ function restartPolling(){
 
 async function loadSession(){
   session = await api('/api/session');
-  $('pair').value = session.pair;
+  buildPairOptions(session.exchanges, session.pair);
   renderSession(); restartPolling(); refresh();
 }
 
 $('btnStart').onclick = async ()=>{
   try{
     session = await api('/api/session',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({pair:$('pair').value, poll_interval:Number($('poll').value)||5, max_symbols:Number($('maxSymbols').value)||0, start:true})});
+      body:JSON.stringify({pair:currentPair(), poll_interval:Number($('poll').value)||5, max_symbols:Number($('maxSymbols').value)||0, start:true})});
     renderSession(); restartPolling(); toast('Сканер запущен: '+session.symbols_count+' пар');
   }catch(e){ toast('Ошибка: '+e.message); }
 };
@@ -262,7 +280,8 @@ $('btnStop').onclick = async ()=>{
   try{ session = await api('/api/scan/stop',{method:'POST'}); setBadge(); toast('Сканер остановлен'); }
   catch(e){ toast('Ошибка: '+e.message); }
 };
-$('pair').onchange = ()=> buildFeeFields($('pair').value, session&&session.fees_default);
+$('pairA').onchange = ()=> buildFeeFields(currentPair(), session&&session.fees_default);
+$('pairB').onchange = ()=> buildFeeFields(currentPair(), session&&session.fees_default);
 $('onlySignals').onchange = refresh;
 
 let calcBusy = false, lastAutoSymbol = null, lastAutoAt = 0;

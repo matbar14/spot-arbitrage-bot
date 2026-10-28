@@ -46,3 +46,30 @@ class Settings:
     xeggex_fee_bps: float = _float("XEGGEX_FEE_BPS", 20)
     xeggex_api_key: str = os.getenv("XEGGEX_API_KEY", "")
     xeggex_secret: str = os.getenv("XEGGEX_SECRET", "")
+
+    def exchange_fee_bps(self, exchange_id: str) -> float | None:
+        """Configured taker fee in bps for any registered exchange.
+
+        mexc -> optional (None means auto-fetch), nonkyc/xeggex -> legacy
+        fields, other exchanges -> <ID>_FEE_BPS env override or None
+        (the registry default applies).
+        """
+        if exchange_id == "mexc":
+            return self.mexc_fee_bps
+        if exchange_id == "nonkyc":
+            return self.nonkyc_fee_bps
+        if exchange_id == "xeggex":
+            return self.xeggex_fee_bps
+        raw = os.getenv(f"{exchange_id.upper()}_FEE_BPS", "").strip()
+        return float(raw) if raw else None
+
+    def exchange_credentials(self) -> dict[str, tuple[str, str]]:
+        """API keys for every registered exchange: <ID>_API_KEY / <ID>_SECRET."""
+        from .exchanges import EXCHANGE_REGISTRY
+        return {
+            exchange_id: (
+                os.getenv(f"{exchange_id.upper()}_API_KEY", ""),
+                os.getenv(f"{exchange_id.upper()}_SECRET", ""),
+            )
+            for exchange_id in EXCHANGE_REGISTRY
+        }
