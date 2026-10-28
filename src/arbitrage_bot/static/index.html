@@ -59,8 +59,7 @@ tr.best td{background:rgba(16,185,129,.06)}
 .toolbar input{width:170px}
 .mini{font-size:11px;color:var(--muted)}
 .calc-form{display:grid;grid-template-columns:1fr 1fr;gap:10px}
-.calc-form .field.full{grid-column:1/-1}
-.calc-form button{grid-column:1/-1;margin-top:4px}
+.calc-form .full{grid-column:1/-1}
 .results{margin-top:12px;display:flex;flex-direction:column;gap:10px}
 .card{border:1px solid var(--border2);border-radius:10px;padding:12px;background:var(--panel2)}
 .card h3{margin:0 0 8px;font-size:13px}
@@ -79,11 +78,12 @@ tr.best td{background:rgba(16,185,129,.06)}
 .empty{color:var(--muted);font-size:13px;padding:18px 6px;text-align:center}
 footer{padding:10px 22px 26px;color:var(--muted);font-size:11.5px;line-height:1.6}
 #toast{position:fixed;bottom:18px;right:18px;background:var(--panel);border:1px solid var(--border2);color:var(--text);padding:10px 16px;border-radius:10px;font-size:13px;display:none;z-index:20;max-width:420px}
-tr[data-symbol]{cursor:pointer}
-tr.selected td{background:rgba(16,185,129,.12) !important}
-.presets{display:flex;gap:6px;flex-wrap:wrap}
+.presets{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
 .presets button{padding:4px 12px;font-size:11px;border-radius:6px}
 .presets button:hover{border-color:var(--accent);color:var(--accent2)}
+.live-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px}
+.live-grid .stat{padding:8px 10px}
+.live-grid .stat .v{font-size:15px}
 </style>
 </head>
 <body>
@@ -140,27 +140,24 @@ tr.selected td{background:rgba(16,185,129,.12) !important}
   </section>
 
   <section class="panel">
-    <h2>Калькулятор позиции&nbsp;<label class="mini" style="text-transform:none;letter-spacing:0;cursor:pointer;font-weight:400"><input type="checkbox" id="autoPull" checked> авто: лучший сигнал</label></h2>
+    <h2>Торговая панель · лайв-режим</h2>
     <div class="calc-form">
-      <div class="field full"><label>Символ</label>
-        <input id="calcSymbol" list="symbolList" placeholder="BTC/USDT">
-        <datalist id="symbolList"></datalist>
+      <div class="field"><label>Капитал на площадку, USDT</label><input type="number" id="liveCapital" min="1" step="1" value="100"></div>
+      <div class="field"><label>Мин. net edge, bps</label><input type="number" id="liveEdge" min="0" step="1" value="35"></div>
+      <div class="full mini" style="margin-top:2px"><label><input type="checkbox" id="liveEnabled"> бумажная торговля (dry-run): сканер сам «исполняет» сигналы выше порога по свежим стаканам и копит статистику P&L. Реальные ордера не отправляются.</label></div>
+      <div class="presets full">
+        <button id="btnLiveApply">Применить</button>
+        <button id="btnLiveReset" class="ghost">Сброс статистики</button>
       </div>
-      <div class="field"><label>Сумма входа, USDT</label><input type="number" id="calcNotional" min="0" step="1" value="100"></div>
-      <div class="field"><label>Буфер, bps</label><input type="number" id="calcBuffer" min="0" step="1" value="10"></div>
-      <div class="field full"><label>Быстрый выбор суммы</label><div class="presets" id="presets"></div></div>
-      <div id="feeFields" class="field full" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px"></div>
-      <button id="btnCalc">Рассчитать по живым стаканам</button>
     </div>
-    <div class="err" id="calcError"></div>
-    <div class="results" id="calcResults"></div>
+    <div class="results" id="liveStats"><div class="empty">включите бумажную торговлю — здесь появится P&L, площадки и история сделок</div></div>
   </section>
 </main>
 
 <footer>
-  Расчёт выполняется по текущей глубине стаканов обеих бирж: объём ограничен встречной ликвидностью, цена — VWAP задействованных уровней.
-  Net edge = маржа после комиссий обеих площадок и буфера проскальзывания. Положительное значение не гарантирует прибыль: спред может исчезнуть до исполнения.
-  Комиссии задаются в bps (5 bps = 0.05%). Интерфейс работает только в dry-run и не отправляет ордера.
+  Торговая панель работает в режиме бумажной торговли: сигналы выше порога проверяются на свежей глубине стаканов и «исполняются» виртуально заданным капиталом на площадку (VWAP по встречной ликвидности, комиссии и буфер проскальзывания учитываются).
+  Net edge = маржа после комиссий обеих площадок и буфера. Положительное значение не гарантирует прибыль в реале: спред может исчезнуть до исполнения ордеров, а вброс заявки сдвинет цену.
+  Комиссии задаются в bps (5 bps = 0.05%). Реальные ордера интерфейсом не отправляются.
 </footer>
 <div id="toast"></div>
 
@@ -168,7 +165,7 @@ tr.selected td{background:rgba(16,185,129,.12) !important}
 const $ = id => document.getElementById(id);
 const fmt = (v, d=2) => v===null||v===undefined ? '—' : Number(v).toLocaleString('ru-RU',{minimumFractionDigits:d,maximumFractionDigits:d});
 const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-let session = null, pollTimer = null, feeInputs = {};
+let session = null, pollTimer = null;
 
 function toast(msg, ms=3500){ const t=$('toast'); t.textContent=msg; t.style.display='block'; clearTimeout(t._h); t._h=setTimeout(()=>t.style.display='none', ms); }
 
@@ -194,8 +191,6 @@ function renderSession(){
   $('poll').value = session.poll_interval;
   $('maxSymbols').value = session.max_symbols;
   $('stSymbols').textContent = session.symbols_count;
-  $('symbolList').innerHTML = (session.symbols||[]).map(s=>`<option value="${esc(s)}">`).join('');
-  buildFeeFields(session.pair, session.fees_default);
 }
 
 function buildPairOptions(exchanges, currentPair){
@@ -221,18 +216,6 @@ function syncPairUI(){
 }
 
 function currentPair(){ return $('pairA').value === 'all' ? 'all' : $('pairA').value + '-' + $('pairB').value; }
-
-function buildFeeFields(pair, defaults){
-  const exchanges = pair === 'all'
-    ? ((session && session.exchanges) || [])
-    : pair.split('-');
-  feeInputs = {};
-  $('feeFields').innerHTML = exchanges.map(ex=>{
-    feeInputs[ex] = `fee_${ex}`;
-    return `<div class="field"><label>${ex.toUpperCase()} fee, bps</label>
-      <input type="number" id="fee_${ex}" min="0" step="0.1" value="${(defaults&&defaults[ex])!=null?defaults[ex]:5}"></div>`;
-  }).join('');
-}
 
 function renderRows(data){
   const rows = data.rows||[];
@@ -262,7 +245,6 @@ function renderRows(data){
       <td>${fmt(r.quantity,6)}</td>
       <td>${fmt(r.book_age_s,1)}</td>
     </tr>`).join('');
-  renderSelection();
 }
 
 async function refresh(){
@@ -270,7 +252,6 @@ async function refresh(){
     const minEdge = $('onlyProfit').checked ? '0' : '-1000000';
     const data = await api('/api/snapshot?min_edge='+minEdge);
     renderRows(data);
-    maybeAutoPull(data.rows||[], data.running);
   }catch(e){ $('scanError').textContent = 'snapshot error: '+e.message; }
 }
 
@@ -297,119 +278,73 @@ $('btnStop').onclick = async ()=>{
   try{ session = await api('/api/scan/stop',{method:'POST'}); setBadge(); toast('Сканер остановлен'); }
   catch(e){ toast('Ошибка: '+e.message); }
 };
-$('pairA').onchange = ()=>{ syncPairUI(); buildFeeFields(currentPair(), session&&session.fees_default); };
-$('pairB').onchange = ()=> buildFeeFields(currentPair(), session&&session.fees_default);
+$('pairA').onchange = ()=> syncPairUI();
 $('onlySignals').onchange = refresh;
 $('onlyProfit').onchange = refresh;
 
-let calcBusy = false, lastAutoSymbol = null, lastAutoAt = 0;
-let calcPairBuy = null, calcPairSell = null;
+// ── Торговая панель · лайв-режим (бумажная торговля) ─────────────────────
+const pnlClass = v => v > 0 ? 'profit-pos' : (v < 0 ? 'profit-neg' : '');
 
-async function runCalc(){
-  const symbol = $('calcSymbol').value.trim();
-  if(!symbol){ toast('Укажите символ, например BTC/USDT'); return; }
-  if(calcBusy) return; calcBusy = true;
-  $('calcError').textContent=''; $('calcResults').innerHTML='<div class="empty">считаю…</div>';
-  const fees = {};
-  for(const ex in feeInputs){ const v=$('fee_'+ex).value; if(v!=='') fees[ex]=Number(v); }
-  try{
-    const data = await api('/api/calc',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({symbol, notional:Number($('calcNotional').value)||100,
-        buffer_bps:Number($('calcBuffer').value)||0, fees,
-        buy: calcPairBuy || undefined, sell: calcPairSell || undefined})});
-    renderCalc(data);
-  }catch(e){ $('calcResults').innerHTML=''; $('calcError').textContent='Ошибка: '+e.message; }
-  finally{ calcBusy = false; }
-}
-$('btnCalc').onclick = runCalc;
-$('calcNotional').addEventListener('change', ()=>{ if($('calcSymbol').value.trim()) runCalc(); });
-$('calcSymbol').addEventListener('keydown', e=>{ if(e.key==='Enter') runCalc(); });
-$('calcSymbol').addEventListener('input', ()=>{ calcPairBuy = calcPairSell = null; });
-
-document.querySelector('#rows').addEventListener('click', e=>{
-  const tr = e.target.closest('tr[data-symbol]');
-  if(!tr) return;
-  $('calcSymbol').value = tr.dataset.symbol;
-  calcPairBuy = tr.dataset.buy || null;
-  calcPairSell = tr.dataset.sell || null;
-  renderSelection();
-  runCalc();
-});
-
-function renderSelection(){
-  const current = $('calcSymbol').value.trim().toUpperCase();
-  document.querySelectorAll('#rows tr[data-symbol]').forEach(tr=>{
-    tr.classList.toggle('selected', tr.dataset.symbol === current);
-  });
-}
-
-const PRESETS = [10,25,50,100,250,500];
-$('presets').innerHTML = PRESETS.map(v=>`<button class="ghost" data-v="${v}">${v}</button>`).join('');
-$('presets').addEventListener('click', e=>{
-  const b = e.target.closest('button[data-v]');
-  if(!b) return;
-  $('calcNotional').value = b.dataset.v;
-  if($('calcSymbol').value.trim()) runCalc();
-});
-
-function maybeAutoPull(rows, running){
-  if(!running || !$('autoPull').checked || !rows.length) return;
-  const best = rows.find(r=>r.level==='signal') || rows[0];
-  const now = Date.now();
-  if(best.symbol !== lastAutoSymbol && now - lastAutoAt > 10000){
-    lastAutoSymbol = best.symbol; lastAutoAt = now;
-    $('calcSymbol').value = best.symbol;
-    calcPairBuy = best.buy || null;
-    calcPairSell = best.sell || null;
-    toast(`Автоподтягивание: ${best.symbol} ${best.buy||''}→${best.sell||''} — ${fmt(best.net_edge_bps)} bps`);
-    runCalc();
-  }
-}
-
-function verdictCard(d, minEdge){
-  const cls = d.net_edge_bps>=minEdge ? 'ok' : (d.net_edge_bps>=0 ? 'low' : 'bad');
-  const label = d.net_edge_bps>=minEdge ? 'выше порога' : (d.net_edge_bps>=0 ? 'ниже порога' : 'убыточно');
-  const profitClass = d.net_profit>=0 ? 'profit-pos':'profit-neg';
-  return `<div class="card">
-    <h3>buy ${esc(d.buy)} <span class="arrow">→</span> sell ${esc(d.sell)}
-      <span class="verdict ${cls}">${label}</span></h3>
-    <div class="kv">
-      <span class="k">Исполнимый объём</span><span class="v">${fmt(d.quantity,6)}</span>
-      <span class="k">VWAP покупки</span><span class="v">${fmt(d.vwap_buy,6)}</span>
-      <span class="k">VWAP продажи</span><span class="v">${fmt(d.vwap_sell,6)}</span>
-      <span class="k">Затраты (с комиссией)</span><span class="v">${fmt(d.buy_cost_incl_fee,4)} USDT</span>
-      <span class="k">Выручка (после комиссии)</span><span class="v">${fmt(d.sell_proceeds_net_fee,4)} USDT</span>
-      <span class="k">Чистая прибыль</span><span class="v ${profitClass}">${fmt(d.net_profit,4)} USDT</span>
-      <span class="k">Net edge</span><span class="v ${d.net_edge_bps>=minEdge?'edge signal':(d.net_edge_bps>=0?'edge watch':'edge negative')}">${fmt(d.net_edge_bps)} bps</span>
-      <span class="k">Доходность от суммы</span><span class="v">${fmt(d.net_edge_bps/100,2)} %</span>
-      <span class="k">Возраст стакана</span><span class="v">${fmt(d.book_age_s,1)} с</span>
-    </div>
+function renderLive(st){
+  const venueRows = Object.entries(st.venues||{}).sort((a,b)=>b[1].volume_usdt-a[1].volume_usdt);
+  let html = `<div class="live-grid">
+    <div class="stat"><div class="k">Сделок</div><div class="v">${st.trades_total} <span class="mini">+${st.wins}/−${st.losses}</span></div></div>
+    <div class="stat"><div class="k">Чистая прибыль</div><div class="v ${pnlClass(st.total_profit)}">${fmt(st.total_profit,4)}</div></div>
+    <div class="stat"><div class="k">Задействовано, USDT</div><div class="v">${fmt(st.deployed_capital,0)}</div></div>
+    <div class="stat"><div class="k">ROI</div><div class="v ${pnlClass(st.roi_pct)}">${fmt(st.roi_pct,3)} %</div></div>
+    <div class="stat"><div class="k">Прибыль/час, USDT</div><div class="v ${pnlClass(st.profit_per_hour)}">${fmt(st.profit_per_hour,3)}</div></div>
+    <div class="stat"><div class="k">Сделок/час</div><div class="v">${fmt(st.trades_per_hour,1)}</div></div>
   </div>`;
+  if(venueRows.length){
+    html += `<div class="tablewrap" style="max-height:170px;margin-top:10px"><table>
+      <thead><tr><th>Площадка</th><th>Покупок</th><th>Продаж</th><th>Оборот, USDT</th></tr></thead><tbody>
+      ${venueRows.map(([ex,v])=>`<tr><td class="sym">${esc(ex)}</td><td>${v.buys}</td><td>${v.sells}</td><td>${fmt(v.volume_usdt,2)}</td></tr>`).join('')}
+    </tbody></table></div>`;
+  }
+  if((st.recent||[]).length){
+    html += `<div class="tablewrap" style="max-height:250px;margin-top:10px"><table>
+      <thead><tr><th>Время</th><th>Пара</th><th>Направление</th><th>Прибыль, USDT</th><th>Edge, bps</th><th>ROI, %</th></tr></thead><tbody>
+      ${st.recent.map(t=>`<tr><td>${esc(String(t.ts).slice(11,19))}</td><td class="sym">${esc(t.symbol)}</td>
+        <td class="dir">buy <b>${esc(t.buy)}</b> → sell <b>${esc(t.sell)}</b></td>
+        <td class="${pnlClass(t.net_profit)}">${fmt(t.net_profit,4)}</td>
+        <td class="edge ${t.net_edge_bps>=st.min_edge_bps?'signal':'watch'}">${fmt(t.net_edge_bps,1)}</td>
+        <td class="${pnlClass(t.roi_pct)}">${fmt(t.roi_pct,3)}</td></tr>`).join('')}
+    </tbody></table></div>`;
+  }
+  if(!st.enabled && !st.trades_total){
+    html += `<div class="empty">включите галочку выше — сигналы из сканера будут «исполняться» виртуально</div>`;
+  }
+  $('liveStats').innerHTML = html;
 }
 
-function renderCalc(data){
-  const minEdge = session.settings.min_net_edge_bps;
-  let html = '';
-  if(data.empty_books && data.empty_books.length){
-    html += `<div class="err">Пустой стакан: ${esc(data.empty_books.join(', '))} — сделка неисполнима</div>`;
-  }
-  if(!data.directions || !data.directions.length){
-    html += `<div class="empty">Нет встречной ликвидности для номинала ${fmt(data.notional,2)} USDT</div>`;
-  } else {
-    html += data.directions.map(d=>verdictCard(d, minEdge)).join('');
-    if(data.implausible) html += `<div class="err">Внимание: edge аномально высок — вероятна неликвидность или stale-котировка</div>`;
-  }
-  html += `<div class="books"><table>
-    <thead><tr><th>Биржа</th><th>bid / ask (top)</th><th>Уровней в ответе</th></tr></thead><tbody>
-    ${Object.entries(data.books).map(([ex,b])=>`
-      <tr><td class="sym">${esc(ex)}</td>
-      <td><span class="bid">${b.bids[0]?fmt(b.bids[0][0],6):'—'}</span> / <span class="ask">${b.asks[0]?fmt(b.asks[0][0],6):'—'}</span></td>
-      <td>${b.bids.length} / ${b.asks.length}</td></tr>`).join('')}
-  </tbody></table></div>`;
-  $('calcResults').innerHTML = html;
+async function applyLive(extra){
+  try{
+    const st = await api('/api/live/config',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify(Object.assign({
+        capital_per_venue:Number($('liveCapital').value)||100,
+        min_edge_bps:Number($('liveEdge').value)||0,
+        enabled:$('liveEnabled').checked}, extra||{}))});
+    renderLive(st);
+    toast(extra&&extra.reset ? 'Статистика сброшена' : (st.enabled ? 'Бумажная торговля включена' : 'Настройки панели применены'));
+  }catch(e){ toast('Ошибка: '+e.message); }
 }
+$('btnLiveApply').onclick = ()=>applyLive();
+$('btnLiveReset').onclick = ()=>applyLive({reset:true});
+$('liveEnabled').onchange = ()=>applyLive();
+
+async function loadLive(){
+  try{
+    const st = await api('/api/live/stats');
+    $('liveCapital').value = st.capital_per_venue;
+    $('liveEdge').value = st.min_edge_bps;
+    $('liveEnabled').checked = !!st.enabled;
+    renderLive(st);
+  }catch(e){}
+}
+setInterval(()=>{ api('/api/live/stats').then(renderLive).catch(()=>{}); }, 5000);
 
 loadSession().catch(e=>toast('Не удалось загрузить сессию: '+e.message));
+loadLive();
 refresh();
 </script>
 </body>

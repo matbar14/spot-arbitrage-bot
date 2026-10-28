@@ -23,6 +23,9 @@ from .strategy import Opportunity, find_opportunities
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 SNAPSHOT_MAX_ROWS = 1500
+PAPER_TRADES_MAX = 400       # хвост истории бумажных сделок
+PAPER_COOLDOWN_S = 300       # пауза между повторными входами в тот же symbol|buy|sell
+PAPER_MAX_PER_CYCLE = 2      # максимум виртуальных сделок за один скан-цикл
 
 
 def _dec(value, default: Decimal | None = None) -> Decimal | None:
@@ -111,6 +114,13 @@ class Session:
         self.last_error: str | None = None
         self.started_at = time.monotonic()
         self._lock = asyncio.Lock()
+        # Лайв-панель: бумажная торговля (dry-run). Реальные ордера не отправляются.
+        self.live_enabled: bool = False
+        self.live_capital: float = 100.0
+        self.live_min_edge_bps: float = float(settings.min_net_edge_bps)
+        self.live_started_at: float | None = None
+        self.paper_trades: list[dict] = []
+        self._trade_cooldowns: dict[str, float] = {}
 
     @property
     def pair_name(self) -> str:
@@ -237,6 +247,11 @@ class Session:
         self.rows = rows
         self.cycles += 1
         self.last_error = "; ".join(errors[:3]) if errors else None
+        if self.live_enabled and rows:
+            try:
+                await self._paper_execute(rows)
+            except Exception as exc:
+                logging.debug("paper execution skipped: %s", exc)
 
     async def _loop(self) -> None:
         while True:
@@ -370,6 +385,128 @@ class Session:
             "implausible": any(Decimal(str(item["net_edge_bps"])) > cap for item in directions),
         }
 
+    def configure_live(self, *, capital_per_venue=None, min_edge_bps=None, enabled=None, reset: bool = False) -> None:
+        """Apply live-panel settings (paper trading only; no real orders here)."""
+        if capital_per_venue is not None:
+            try:
+                value = float(capital_per_venue)
+            except (TypeError, ValueError):
+                raise ValueError("capital_per_venue must be a number")
+            if not 1 <= value <= 1_000_000:
+                raise ValueError("капитал на площадку должен быть в диапазоне 1..1000000 USDT")
+            self.live_capital = value
+        if min_edge_bps is not None:
+            try:
+                value = float(min_edge_bps)
+            except (TypeError, ValueError):
+                raise ValueError("min_edge_bps must be a number")
+            if not 0 <= value <= 1000:
+                raise ValueError("минимальный edge должен быть в диапазоне 0..1000 bps")
+            self.live_min_edge_bps = value
+        if enabled is not None:
+            self.live_enabled = bool(enabled)
+            if self.live_enabled and self.live_started_at is None:
+                self.live_started_at = time.monotonic()
+        if reset:
+            self.paper_trades = []
+            self._trade_cooldowns = {}
+            self.live_started_at = time.monotonic() if self.live_enabled else None
+
+    async def _paper_execute(self, rows: list[dict]) -> None:
+        """Re-check top signals on fresh books and record paper trades.
+
+        Every trade is validated against current depth for the configured
+        capital (walk-based execution, same as the calculator) — a signal
+        row alone is not enough: the spread must survive a fresh fetch.
+        """
+        candidates = [row for row in rows if row["net_edge_bps"] >= self.live_min_edge_bps]
+        executed = 0
+        now = time.monotonic()
+        for row in candidates:
+            if executed >= PAPER_MAX_PER_CYCLE:
+                break
+            key = f"{row['symbol']}|{row['buy']}|{row['sell']}"
+            if now - self._trade_cooldowns.get(key, float("-inf")) < PAPER_COOLDOWN_S:
+                continue
+            try:
+                result = await self.calc({
+                    "symbol": row["symbol"], "buy": row["buy"], "sell": row["sell"],
+                    "notional": self.live_capital,
+                })
+            except Exception:
+                self._trade_cooldowns[key] = now - PAPER_COOLDOWN_S / 2  # половинный штраф за битый запрос
+                continue
+            direction = next((
+                item for item in result.get("directions", [])
+                if item["buy"] == row["buy"] and item["sell"] == row["sell"]
+            ), None)
+            if (
+                direction is None
+                or direction["net_edge_bps"] < self.live_min_edge_bps
+                or not direction["net_profit"]
+                or direction["net_profit"] <= 0
+                or not direction.get("buy_cost_incl_fee")
+            ):
+                self._trade_cooldowns[key] = now - PAPER_COOLDOWN_S / 2  # спред не подтвердился на свежих стаканах
+                continue
+            self._trade_cooldowns[key] = now
+            self.paper_trades.append({
+                "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "symbol": result["symbol"],
+                "buy": direction["buy"],
+                "sell": direction["sell"],
+                "notional": result["notional"],
+                "quantity": direction["quantity"],
+                "vwap_buy": direction["vwap_buy"],
+                "vwap_sell": direction["vwap_sell"],
+                "buy_cost": direction["buy_cost_incl_fee"],
+                "sell_proceeds": direction["sell_proceeds_net_fee"],
+                "net_profit": direction["net_profit"],
+                "net_edge_bps": direction["net_edge_bps"],
+                "roi_pct": round(direction["net_profit"] / direction["buy_cost_incl_fee"] * 100, 4),
+                "book_age_s": direction["book_age_s"],
+            })
+            if len(self.paper_trades) > PAPER_TRADES_MAX:
+                del self.paper_trades[:-PAPER_TRADES_MAX]
+            executed += 1
+
+    def live_stats_payload(self) -> dict:
+        trades = self.paper_trades
+        total_profit = round(sum(t["net_profit"] for t in trades), 4)
+        wins = sum(1 for t in trades if t["net_profit"] > 0)
+        venues: dict[str, dict] = {}
+        for trade in trades:
+            buyer = venues.setdefault(trade["buy"], {"buys": 0, "sells": 0, "volume_usdt": 0.0})
+            seller = venues.setdefault(trade["sell"], {"buys": 0, "sells": 0, "volume_usdt": 0.0})
+            buyer["buys"] += 1
+            buyer["volume_usdt"] = round(buyer["volume_usdt"] + trade["buy_cost"], 2)
+            seller["sells"] += 1
+            seller["volume_usdt"] = round(seller["volume_usdt"] + trade["sell_proceeds"], 2)
+        started = self.live_started_at
+        duration_s = max(time.monotonic() - started, 1.0) if started is not None else 0.0
+        duration_h = duration_s / 3600 if started is not None else 0.0
+        deployed = self.live_capital * max(len(venues), 1) if trades else self.live_capital * max(len(self.exchange_ids), 1)
+        profits = [t["net_profit"] for t in trades]
+        return {
+            "enabled": self.live_enabled,
+            "capital_per_venue": self.live_capital,
+            "min_edge_bps": self.live_min_edge_bps,
+            "trades_total": len(trades),
+            "wins": wins,
+            "losses": len(trades) - wins,
+            "total_profit": total_profit,
+            "avg_profit": round(total_profit / len(trades), 4) if trades else 0.0,
+            "best_trade": max(profits) if profits else 0.0,
+            "worst_trade": min(profits) if profits else 0.0,
+            "deployed_capital": round(deployed, 2),
+            "roi_pct": round(total_profit / deployed * 100, 4) if deployed else 0.0,
+            "duration_s": round(duration_s, 1),
+            "trades_per_hour": round(len(trades) / duration_h, 2) if duration_h else 0.0,
+            "profit_per_hour": round(total_profit / duration_h, 4) if duration_h else 0.0,
+            "venues": venues,
+            "recent": list(reversed(trades[-12:])),
+        }
+
 
 async def index(_request: web.Request) -> web.Response:
     # no-cache: браузер всегда перепроверяет Etag/Last-Modified и сразу видит
@@ -452,6 +589,29 @@ async def post_calc(request: web.Request) -> web.Response:
         raise web.HTTPInternalServerError(text=f"market data error: {exc}")
 
 
+async def get_live_stats(request: web.Request) -> web.Response:
+    session: Session = request.app["session"]
+    return web.json_response(session.live_stats_payload())
+
+
+async def post_live_config(request: web.Request) -> web.Response:
+    session: Session = request.app["session"]
+    try:
+        payload = await request.json()
+    except Exception:
+        raise web.HTTPBadRequest(text="invalid JSON body")
+    try:
+        session.configure_live(
+            capital_per_venue=payload.get("capital_per_venue"),
+            min_edge_bps=payload.get("min_edge_bps"),
+            enabled=payload.get("enabled"),
+            reset=bool(payload.get("reset")),
+        )
+    except ValueError as exc:
+        raise web.HTTPBadRequest(text=str(exc))
+    return web.json_response(session.live_stats_payload())
+
+
 def create_app(session: Session) -> web.Application:
     app = web.Application()
     app["session"] = session
@@ -462,6 +622,8 @@ def create_app(session: Session) -> web.Application:
     app.router.add_post("/api/scan/stop", stop_scan)
     app.router.add_get("/api/snapshot", get_snapshot)
     app.router.add_post("/api/calc", post_calc)
+    app.router.add_get("/api/live/stats", get_live_stats)
+    app.router.add_post("/api/live/config", post_live_config)
     async def on_cleanup(app: web.Application) -> None:
         await session.close()
     app.on_cleanup.append(on_cleanup)
