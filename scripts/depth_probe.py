@@ -19,13 +19,20 @@ from arbitrage_bot.exchanges import PublicMarketData  # noqa: E402
 
 CANDIDATES = [
     # symbol, buy_ex, sell_ex
+    ("SIREN/USDT", "bingx", "mexc"),
+    ("AI/USDT", "mexc", "lbank"),
+    ("BLUAI/USDT", "mexc", "xt"),
+    ("BLUAI/USDT", "mexc", "bingx"),
+    ("CAP/USDT", "lbank", "mexc"),
+    ("BZZ/USDT", "xt", "mexc"),
     ("NIGHT/USDT", "nonkyc", "mexc"),
-    ("DCR/USDT", "mexc", "nonkyc"),
-    ("ARRR/USDT", "mexc", "nonkyc"),
-    ("INJ/USDT", "nonkyc", "mexc"),
 ]
 SPEND_TARGETS = [25.0, 50.0, 100.0, 200.0]
-FEE = {"mexc": Decimal("0.0005"), "nonkyc": Decimal("0.002"), "xeggex": Decimal("0.002")}
+FEE = {"mexc": Decimal("0.0005"), "nonkyc": Decimal("0.002"), "xeggex": Decimal("0.002"),
+       "xt": Decimal("0.001"), "lbank": Decimal("0.001"), "bingx": Decimal("0.001"),
+       "htx": Decimal("0.002"), "gate": Decimal("0.002"), "bitrue": Decimal("0.003"),
+       "whitebit": Decimal("0.001"), "kucoin": Decimal("0.001"), "bybit": Decimal("0.001"),
+       "bitget": Decimal("0.001")}
 LIMIT = 50
 
 
@@ -89,7 +96,8 @@ async def probe(market: PublicMarketData, symbol, buy_ex, sell_ex):
 
 
 async def main():
-    market = PublicMarketData(10.0, None, ("mexc", "nonkyc"))
+    exchange_ids = tuple(dict.fromkeys(ex for _, b, s in CANDIDATES for ex in (b, s)))
+    market = PublicMarketData(10.0, None, exchange_ids)
     try:
         await market.load_markets()
         for sym, b, s in CANDIDATES:
