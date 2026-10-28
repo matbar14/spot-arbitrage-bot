@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
 import asyncio
+import logging
 from typing import Any
 
 import ccxt.async_support as ccxt
@@ -88,7 +89,63 @@ class PublicMarketData:
         await asyncio.gather(*(client.close() for client in self.clients.values()), return_exceptions=True)
 
     async def load_markets(self):
-        await asyncio.gather(*(client.load_markets() for client in self.clients.values()))
+        """Load markets for every client without letting one venue kill startup.
+
+        A single slow endpoint (e.g. lbank withdrawConfigs.do timing out)
+        must not abort the whole session: every failing venue gets one
+        relaxed-timeout retry, then is dropped with a warning. Raises
+        ExchangeConfigurationError only when fewer than two venues survive —
+        an arbitrage session on a single venue is meaningless anyway.
+        """
+        results = await asyncio.gather(
+            *(self._load_one(name, client) for name, client in list(self.clients.items()))
+        )
+        failed = {name for name, ok in results if not ok}
+        if failed:
+            logging.warning("load_markets: повторная попытка для %s", ", ".join(sorted(failed)))
+            retry = await asyncio.gather(
+                *(self._load_one(name, self.clients[name]) for name in sorted(failed) if name in self.clients)
+            )
+            failed = {name for name, ok in retry if not ok}
+        for name in sorted(failed):
+            client = self.clients.pop(name, None)
+            if client is not None:
+                logging.warning("load_markets: %s исключён из сессии — рынки не загрузились", name)
+                try:
+                    await client.close()
+                except Exception:
+                    pass
+        if len(self.clients) < 2:
+            raise ExchangeConfigurationError(
+                "рынки загрузились менее чем на двух биржах (упали: "
+                + ", ".join(sorted(failed)) + ") — проверьте сеть или повторите позже"
+            )
+
+    async def _load_one(self, name: str, client: Any) -> tuple[str, bool]:
+        """One load_markets attempt with relaxed timeout and no currencies meta."""
+        old_timeout = getattr(client, "timeout", None)
+        has_map = getattr(client, "has", None)
+        old_flag = has_map.get("fetchCurrencies") if isinstance(has_map, dict) else None
+        try:
+            # Market loading hits heavy meta endpoints that are slower than
+            # order books; give the attempt extra headroom. ccxt timeouts are
+            # milliseconds, local adapters use seconds — hence the 1000 split.
+            if isinstance(old_timeout, (int, float)) and old_timeout > 0:
+                client.timeout = max(old_timeout, 30_000 if old_timeout >= 1000 else 30)
+            if old_flag is True and isinstance(has_map, dict):
+                # Deposit/withdraw chain info is irrelevant for spot spreads
+                # and the call is notoriously slow on some venues (lbank).
+                has_map["fetchCurrencies"] = False
+            await client.load_markets()
+            return name, True
+        except Exception as exc:  # noqa: BLE001 — resilience is the whole point
+            logging.warning("load_markets: %s — %s: %s", name, type(exc).__name__, exc)
+            return name, False
+        finally:
+            if isinstance(old_timeout, (int, float)) and old_timeout > 0:
+                client.timeout = old_timeout
+            if old_flag is not None and isinstance(has_map, dict):
+                has_map["fetchCurrencies"] = old_flag
 
     async def fetch(self, exchange: str, symbol: str, limit: int) -> Book:
         client = self.clients[exchange]
