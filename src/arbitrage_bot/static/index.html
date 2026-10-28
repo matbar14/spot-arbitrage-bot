@@ -76,6 +76,11 @@ tr.best td{background:rgba(16,185,129,.06)}
 .empty{color:var(--muted);font-size:13px;padding:18px 6px;text-align:center}
 footer{padding:10px 22px 26px;color:var(--muted);font-size:11.5px;line-height:1.6}
 #toast{position:fixed;bottom:18px;right:18px;background:var(--panel);border:1px solid var(--border2);color:var(--text);padding:10px 16px;border-radius:10px;font-size:13px;display:none;z-index:20;max-width:420px}
+tr[data-symbol]{cursor:pointer}
+tr.selected td{background:rgba(16,185,129,.12) !important}
+.presets{display:flex;gap:6px;flex-wrap:wrap}
+.presets button{padding:4px 12px;font-size:11px;border-radius:6px}
+.presets button:hover{border-color:var(--accent);color:var(--accent2)}
 </style>
 </head>
 <body>
@@ -115,6 +120,7 @@ footer{padding:10px 22px 26px;color:var(--muted);font-size:11.5px;line-height:1.
     <div class="toolbar">
       <input id="filter" placeholder="фильтр: BTC, PEPE…">
       <label class="mini"><input type="checkbox" id="onlySignals"> только сигналы</label>
+      <span class="mini">клик по строке → расчёт в калькуляторе</span>
       <span class="mini" id="snapshotInfo"></span>
     </div>
     <div class="tablewrap">
@@ -130,14 +136,15 @@ footer{padding:10px 22px 26px;color:var(--muted);font-size:11.5px;line-height:1.
   </section>
 
   <section class="panel">
-    <h2>Калькулятор позиции</h2>
+    <h2>Калькулятор позиции&nbsp;<label class="mini" style="text-transform:none;letter-spacing:0;cursor:pointer;font-weight:400"><input type="checkbox" id="autoPull" checked> авто: лучший сигнал</label></h2>
     <div class="calc-form">
       <div class="field full"><label>Символ</label>
         <input id="calcSymbol" list="symbolList" placeholder="BTC/USDT">
         <datalist id="symbolList"></datalist>
       </div>
-      <div class="field"><label>Номинал, USDT</label><input type="number" id="calcNotional" min="0" step="1" value="100"></div>
+      <div class="field"><label>Сумма входа, USDT</label><input type="number" id="calcNotional" min="0" step="1" value="100"></div>
       <div class="field"><label>Буфер, bps</label><input type="number" id="calcBuffer" min="0" step="1" value="10"></div>
+      <div class="field full"><label>Быстрый выбор суммы</label><div class="presets" id="presets"></div></div>
       <div id="feeFields" class="field full" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px"></div>
       <button id="btnCalc">Рассчитать по живым стаканам</button>
     </div>
@@ -212,7 +219,7 @@ function renderRows(data){
     return;
   }
   $('rows').innerHTML = visible.map(r=>`
-    <tr class="${r.best?'best':''}">
+    <tr class="${r.best?'best':''}" data-symbol="${esc(r.symbol)}">
       <td class="sym">${esc(r.symbol)}</td>
       <td class="dir">buy <b>${esc(r.buy)}</b> → sell <b>${esc(r.sell)}</b></td>
       <td class="edge ${r.level}">${fmt(r.net_edge_bps)}</td>
@@ -221,12 +228,14 @@ function renderRows(data){
       <td>${fmt(r.quantity,6)}</td>
       <td>${fmt(r.book_age_s,1)}</td>
     </tr>`).join('');
+  renderSelection();
 }
 
 async function refresh(){
   try{
     const data = await api('/api/snapshot');
     renderRows(data);
+    maybeAutoPull(data.rows||[], data.running);
   }catch(e){ $('scanError').textContent = 'snapshot error: '+e.message; }
 }
 
@@ -256,17 +265,62 @@ $('btnStop').onclick = async ()=>{
 $('pair').onchange = ()=> buildFeeFields($('pair').value, session&&session.fees_default);
 $('onlySignals').onchange = refresh;
 
-$('btnCalc').onclick = async ()=>{
+let calcBusy = false, lastAutoSymbol = null, lastAutoAt = 0;
+
+async function runCalc(){
+  const symbol = $('calcSymbol').value.trim();
+  if(!symbol){ toast('Укажите символ, например BTC/USDT'); return; }
+  if(calcBusy) return; calcBusy = true;
   $('calcError').textContent=''; $('calcResults').innerHTML='<div class="empty">считаю…</div>';
   const fees = {};
   for(const ex in feeInputs){ const v=$('fee_'+ex).value; if(v!=='') fees[ex]=Number(v); }
   try{
     const data = await api('/api/calc',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({symbol:$('calcSymbol').value, notional:Number($('calcNotional').value)||100,
+      body:JSON.stringify({symbol, notional:Number($('calcNotional').value)||100,
         buffer_bps:Number($('calcBuffer').value)||0, fees})});
     renderCalc(data);
   }catch(e){ $('calcResults').innerHTML=''; $('calcError').textContent='Ошибка: '+e.message; }
-};
+  finally{ calcBusy = false; }
+}
+$('btnCalc').onclick = runCalc;
+$('calcNotional').addEventListener('change', ()=>{ if($('calcSymbol').value.trim()) runCalc(); });
+$('calcSymbol').addEventListener('keydown', e=>{ if(e.key==='Enter') runCalc(); });
+
+document.querySelector('#rows').addEventListener('click', e=>{
+  const tr = e.target.closest('tr[data-symbol]');
+  if(!tr) return;
+  $('calcSymbol').value = tr.dataset.symbol;
+  renderSelection();
+  runCalc();
+});
+
+function renderSelection(){
+  const current = $('calcSymbol').value.trim().toUpperCase();
+  document.querySelectorAll('#rows tr[data-symbol]').forEach(tr=>{
+    tr.classList.toggle('selected', tr.dataset.symbol === current);
+  });
+}
+
+const PRESETS = [10,25,50,100,250,500];
+$('presets').innerHTML = PRESETS.map(v=>`<button class="ghost" data-v="${v}">${v}</button>`).join('');
+$('presets').addEventListener('click', e=>{
+  const b = e.target.closest('button[data-v]');
+  if(!b) return;
+  $('calcNotional').value = b.dataset.v;
+  if($('calcSymbol').value.trim()) runCalc();
+});
+
+function maybeAutoPull(rows, running){
+  if(!running || !$('autoPull').checked || !rows.length) return;
+  const best = rows.find(r=>r.level==='signal') || rows[0];
+  const now = Date.now();
+  if(best.symbol !== lastAutoSymbol && now - lastAutoAt > 10000){
+    lastAutoSymbol = best.symbol; lastAutoAt = now;
+    $('calcSymbol').value = best.symbol;
+    toast(`Автоподтягивание: ${best.symbol} — ${fmt(best.net_edge_bps)} bps`);
+    runCalc();
+  }
+}
 
 function verdictCard(d, minEdge){
   const cls = d.net_edge_bps>=minEdge ? 'ok' : (d.net_edge_bps>=0 ? 'low' : 'bad');
@@ -283,6 +337,7 @@ function verdictCard(d, minEdge){
       <span class="k">Выручка (после комиссии)</span><span class="v">${fmt(d.sell_proceeds_net_fee,4)} USDT</span>
       <span class="k">Чистая прибыль</span><span class="v ${profitClass}">${fmt(d.net_profit,4)} USDT</span>
       <span class="k">Net edge</span><span class="v ${d.net_edge_bps>=minEdge?'edge signal':(d.net_edge_bps>=0?'edge watch':'edge negative')}">${fmt(d.net_edge_bps)} bps</span>
+      <span class="k">Доходность от суммы</span><span class="v">${fmt(d.net_edge_bps/100,2)} %</span>
       <span class="k">Возраст стакана</span><span class="v">${fmt(d.book_age_s,1)} с</span>
     </div>
   </div>`;
