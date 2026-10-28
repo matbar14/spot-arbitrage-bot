@@ -372,7 +372,11 @@ class Session:
 
 
 async def index(_request: web.Request) -> web.Response:
-    return web.FileResponse(STATIC_DIR / "index.html")
+    # no-cache: браузер всегда перепроверяет Etag/Last-Modified и сразу видит
+    # обновлённый интерфейс после git pull (иначе висит старый HTML из кэша).
+    response = web.FileResponse(STATIC_DIR / "index.html")
+    response.headers["Cache-Control"] = "no-cache"
+    return response
 
 
 async def get_session(request: web.Request) -> web.Response:
