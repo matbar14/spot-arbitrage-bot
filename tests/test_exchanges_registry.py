@@ -41,6 +41,11 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(_coerce_book_limit(kucoin_spec, 50), 100)
         self.assertEqual(_coerce_book_limit(kucoin_spec, 100), 100)
         self.assertEqual(_coerce_book_limit(kucoin_spec, 200), 100)
+        htx_spec = {"book_limits": (5, 10, 20, 150)}
+        self.assertEqual(_coerce_book_limit(htx_spec, 10), 10)
+        self.assertEqual(_coerce_book_limit(htx_spec, 50), 150)
+        self.assertEqual(_coerce_book_limit(htx_spec, 100), 150)
+        self.assertEqual(_coerce_book_limit(htx_spec, 200), 150)
         self.assertEqual(_coerce_book_limit({}, 10), 10)
         self.assertEqual(_coerce_book_limit({"book_limits": (20, 100)}, 20), 20)
 

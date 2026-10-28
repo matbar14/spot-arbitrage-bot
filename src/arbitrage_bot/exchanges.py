@@ -24,7 +24,7 @@ EXCHANGE_REGISTRY: dict[str, dict[str, Any]] = {
     "xt":       {"factory": getattr(ccxt, "xt", None),        "default_fee_bps": Decimal("20")},
     "lbank":    {"factory": getattr(ccxt, "lbank", None),     "default_fee_bps": Decimal("10")},
     "bingx":    {"factory": getattr(ccxt, "bingx", None),     "default_fee_bps": Decimal("10")},
-    "htx":      {"factory": getattr(ccxt, "htx", None),       "default_fee_bps": Decimal("20")},
+    "htx":      {"factory": getattr(ccxt, "htx", None),       "default_fee_bps": Decimal("20"), "book_limits": (5, 10, 20, 150)},
     "gate":     {"factory": getattr(ccxt, "gate", None),      "default_fee_bps": Decimal("20")},
     "bitrue":   {"factory": getattr(ccxt, "bitrue", None),    "default_fee_bps": Decimal("9.8")},
     "whitebit": {"factory": getattr(ccxt, "whitebit", None),  "default_fee_bps": Decimal("10")},
