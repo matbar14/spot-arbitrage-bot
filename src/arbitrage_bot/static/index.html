@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Spot Arbitrage Bot — мониторинг и расчёт позиций</title>
+<style>
+:root{
+  --bg:#0b0f14; --panel:#11161d; --panel2:#0e1319; --border:#1e2732; --border2:#263242;
+  --text:#e6edf3; --muted:#8b98a5; --accent:#10b981; --accent2:#34d399; --warn:#f59e0b; --danger:#ef4444;
+  --mono:'JetBrains Mono','Fira Code',ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+*{box-sizing:border-box} html,body{margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font:14px/1.45 'Segoe UI',system-ui,-apple-system,Roboto,Arial,sans-serif}
+header{display:flex;align-items:center;gap:14px;padding:14px 22px;border-bottom:1px solid var(--border);background:var(--panel2);position:sticky;top:0;z-index:5;flex-wrap:wrap}
+header h1{font-size:17px;margin:0;font-weight:600;letter-spacing:.2px}
+header h1 .dot{color:var(--accent)}
+.badge{font-size:11px;padding:3px 10px;border-radius:20px;border:1px solid var(--border2);color:var(--muted);background:var(--panel)}
+.badge.live{color:var(--accent);border-color:rgba(16,185,129,.4)}
+.badge.off{color:var(--warn);border-color:rgba(245,158,11,.4)}
+#uptime{margin-left:auto;color:var(--muted);font-size:12px;font-family:var(--mono)}
+.controls{display:flex;gap:10px;align-items:end;padding:14px 22px;border-bottom:1px solid var(--border);flex-wrap:wrap;background:var(--panel2)}
+.field{display:flex;flex-direction:column;gap:4px}
+.field label{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+select,input{background:var(--bg);border:1px solid var(--border2);color:var(--text);border-radius:8px;padding:8px 10px;font-size:13px;outline:none}
+input:focus,select:focus{border-color:var(--accent)}
+input[type=number]{width:110px;font-family:var(--mono)}
+button{background:var(--accent);border:none;color:#04120c;font-weight:600;border-radius:8px;padding:9px 16px;font-size:13px;cursor:pointer}
+button:hover{background:var(--accent2)}
+button.ghost{background:transparent;color:var(--text);border:1px solid var(--border2)}
+button.ghost:hover{border-color:var(--accent);color:var(--accent2)}
+button:disabled{opacity:.45;cursor:not-allowed}
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;padding:14px 22px}
+.stat{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:10px 14px}
+.stat .k{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px}
+.stat .v{font-size:18px;font-family:var(--mono);margin-top:2px}
+.stat .v.accent{color:var(--accent2)}
+main{display:grid;grid-template-columns:minmax(0,1.7fr) minmax(340px,1fr);gap:14px;padding:0 22px 30px}
+@media(max-width:980px){main{grid-template-columns:1fr}}
+.panel{background:var(--panel);border:1px solid var(--border);border-radius:12px;padding:14px}
+.panel h2{margin:0 0 10px;font-size:14px;font-weight:600;color:var(--muted);text-transform:uppercase;letter-spacing:.6px}
+.tablewrap{overflow:auto;max-height:62vh;border:1px solid var(--border);border-radius:8px}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{position:sticky;top:0;background:#151c25;color:var(--muted);text-align:left;padding:8px 10px;font-size:11px;text-transform:uppercase;letter-spacing:.5px;border-bottom:1px solid var(--border2);white-space:nowrap}
+td{padding:7px 10px;border-bottom:1px solid var(--border);white-space:nowrap;font-family:var(--mono);font-size:12.5px}
+tr:hover td{background:#141b24}
+td.sym{font-weight:600;font-family:'Segoe UI',system-ui,sans-serif}
+.dir{font-family:'Segoe UI',system-ui,sans-serif;font-size:12px;color:var(--muted)}
+.dir b{color:var(--text)}
+.edge.signal{color:var(--accent2);font-weight:700}
+.edge.watch{color:var(--warn)}
+.edge.negative{color:var(--danger)}
+tr.best td{background:rgba(16,185,129,.06)}
+.profit-pos{color:var(--accent2)} .profit-neg{color:var(--danger)}
+.toolbar{display:flex;gap:8px;margin-bottom:10px;align-items:center;flex-wrap:wrap}
+.toolbar input{width:170px}
+.mini{font-size:11px;color:var(--muted)}
+.calc-form{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.calc-form .field.full{grid-column:1/-1}
+.calc-form button{grid-column:1/-1;margin-top:4px}
+.results{margin-top:12px;display:flex;flex-direction:column;gap:10px}
+.card{border:1px solid var(--border2);border-radius:10px;padding:12px;background:var(--panel2)}
+.card h3{margin:0 0 8px;font-size:13px}
+.card h3 .arrow{color:var(--accent)}
+.verdict{font-size:11px;padding:2px 8px;border-radius:12px;margin-left:8px}
+.verdict.ok{background:rgba(16,185,129,.15);color:var(--accent2)}
+.verdict.low{background:rgba(245,158,11,.15);color:var(--warn)}
+.verdict.bad{background:rgba(239,68,68,.15);color:var(--danger)}
+.kv{display:grid;grid-template-columns:1fr auto;gap:3px 12px;font-size:12.5px}
+.kv .k{color:var(--muted)}
+.kv .v{font-family:var(--mono);text-align:right}
+.books{margin-top:10px;font-size:11.5px}
+.books table td{padding:3px 10px;font-size:11.5px}
+.books .bid{color:var(--accent2)} .books .ask{color:var(--danger)}
+.err{color:var(--danger);font-size:12px;margin-top:8px;white-space:pre-wrap}
+.empty{color:var(--muted);font-size:13px;padding:18px 6px;text-align:center}
+footer{padding:10px 22px 26px;color:var(--muted);font-size:11.5px;line-height:1.6}
+#toast{position:fixed;bottom:18px;right:18px;background:var(--panel);border:1px solid var(--border2);color:var(--text);padding:10px 16px;border-radius:10px;font-size:13px;display:none;z-index:20;max-width:420px}
+</style>
+</head>
+<body>
+<header>
+  <h1><span class="dot">●</span> Spot Arbitrage Bot</h1>
+  <span class="badge">DRY-RUN · без ордеров</span>
+  <span class="badge" id="pairBadge">—</span>
+  <span class="badge" id="stateBadge">остановлен</span>
+  <span id="uptime"></span>
+</header>
+
+<div class="controls">
+  <div class="field"><label>Связка бирж</label>
+    <select id="pair">
+      <option value="mexc-nonkyc">MEXC ↔ NonKYC</option>
+      <option value="mexc-xeggex">MEXC ↔ XeggeX</option>
+      <option value="nonkyc-xeggex">NonKYC ↔ XeggeX</option>
+    </select>
+  </div>
+  <div class="field"><label>Опрос, сек</label><input type="number" id="poll" min="2" step="1" value="5"></div>
+  <div class="field"><label>Макс. пар (0=все)</label><input type="number" id="maxSymbols" min="0" step="1" value="0"></div>
+  <button id="btnStart">Запустить сканер</button>
+  <button id="btnStop" class="ghost">Стоп</button>
+  <span class="mini" id="scanHint">сканер показывает сигналы по живым стаканам; торговля — только в CLI</span>
+</div>
+
+<div class="stats">
+  <div class="stat"><div class="k">Циклов</div><div class="v" id="stCycles">0</div></div>
+  <div class="stat"><div class="k">Пар в скане</div><div class="v" id="stSymbols">0</div></div>
+  <div class="stat"><div class="k">Лучший edge</div><div class="v accent" id="stBest">—</div></div>
+  <div class="stat"><div class="k">Сигналов ≥ порога</div><div class="v" id="stSignals">0</div></div>
+</div>
+
+<main>
+  <section class="panel">
+    <h2>Живой сканер спредов</h2>
+    <div class="toolbar">
+      <input id="filter" placeholder="фильтр: BTC, PEPE…">
+      <label class="mini"><input type="checkbox" id="onlySignals"> только сигналы</label>
+      <span class="mini" id="snapshotInfo"></span>
+    </div>
+    <div class="tablewrap">
+      <table>
+        <thead><tr>
+          <th>Пара</th><th>Направление</th><th>Net edge, bps</th><th>Прибыль ≈, USDT</th>
+          <th>Цена buy → sell</th><th>Объём</th><th>Возраст книг, с</th>
+        </tr></thead>
+        <tbody id="rows"><tr><td colspan="7" class="empty">сканер не запущен — нажмите «Запустить сканер»</td></tr></tbody>
+      </table>
+    </div>
+    <div class="err" id="scanError"></div>
+  </section>
+
+  <section class="panel">
+    <h2>Калькулятор позиции</h2>
+    <div class="calc-form">
+      <div class="field full"><label>Символ</label>
+        <input id="calcSymbol" list="symbolList" placeholder="BTC/USDT">
+        <datalist id="symbolList"></datalist>
+      </div>
+      <div class="field"><label>Номинал, USDT</label><input type="number" id="calcNotional" min="0" step="1" value="100"></div>
+      <div class="field"><label>Буфер, bps</label><input type="number" id="calcBuffer" min="0" step="1" value="10"></div>
+      <div id="feeFields" class="field full" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px"></div>
+      <button id="btnCalc">Рассчитать по живым стаканам</button>
+    </div>
+    <div class="err" id="calcError"></div>
+    <div class="results" id="calcResults"></div>
+  </section>
+</main>
+
+<footer>
+  Расчёт выполняется по текущей глубине стаканов обеих бирж: объём ограничен встречной ликвидностью, цена — VWAP задействованных уровней.
+  Net edge = маржа после комиссий обеих площадок и буфера проскальзывания. Положительное значение не гарантирует прибыль: спред может исчезнуть до исполнения.
+  Комиссии задаются в bps (5 bps = 0.05%). Интерфейс работает только в dry-run и не отправляет ордера.
+</footer>
+<div id="toast"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const fmt = (v, d=2) => v===null||v===undefined ? '—' : Number(v).toLocaleString('ru-RU',{minimumFractionDigits:d,maximumFractionDigits:d});
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+let session = null, pollTimer = null, feeInputs = {};
+
+function toast(msg, ms=3500){ const t=$('toast'); t.textContent=msg; t.style.display='block'; clearTimeout(t._h); t._h=setTimeout(()=>t.style.display='none', ms); }
+
+async function api(path, opts){
+  const res = await fetch(path, opts);
+  const text = await res.text();
+  let data = null; try { data = text ? JSON.parse(text) : null; } catch(e){ throw new Error(text.slice(0,200)); }
+  if(!res.ok) throw new Error((typeof data==='string'&&data) ? data : (text||res.statusText));
+  return data;
+}
+
+function setBadge(){
+  const b=$('stateBadge');
+  b.textContent = session.running ? 'сканер работает' : 'остановлен';
+  b.className = 'badge ' + (session.running ? 'live' : 'off');
+  $('btnStart').disabled = false; $('btnStop').disabled = !session.running;
+  $('pairBadge').textContent = session.pair.toUpperCase();
+}
+
+function renderSession(){
+  setBadge();
+  $('poll').value = session.poll_interval;
+  $('maxSymbols').value = session.max_symbols;
+  $('stSymbols').textContent = session.symbols_count;
+  $('symbolList').innerHTML = (session.symbols||[]).map(s=>`<option value="${esc(s)}">`).join('');
+  buildFeeFields(session.pair, session.fees_default);
+}
+
+function buildFeeFields(pair, defaults){
+  const exchanges = pair.split('-');
+  feeInputs = {};
+  $('feeFields').innerHTML = exchanges.map(ex=>{
+    feeInputs[ex] = `fee_${ex}`;
+    return `<div class="field"><label>${ex.toUpperCase()} fee, bps</label>
+      <input type="number" id="fee_${ex}" min="0" step="0.1" value="${(defaults&&defaults[ex])!=null?defaults[ex]:5}"></div>`;
+  }).join('');
+}
+
+function renderRows(data){
+  const rows = data.rows||[];
+  const filter = $('filter').value.trim().toUpperCase();
+  const only = $('onlySignals').checked;
+  const visible = rows.filter(r => (!filter || r.symbol.includes(filter)) && (!only || r.level==='signal'));
+  $('stCycles').textContent = data.cycles != null ? data.cycles : 0;
+  const best = rows.length ? rows[0] : null;
+  $('stBest').textContent = best ? fmt(best.net_edge_bps)+' bps' : '—';
+  $('stSignals').textContent = rows.filter(r=>r.level==='signal').length;
+  $('snapshotInfo').textContent = `обновлено ${new Date().toLocaleTimeString('ru-RU')} · строк: ${visible.length}/${rows.length}`;
+  $('scanError').textContent = data.last_error || '';
+  if(!visible.length){
+    $('rows').innerHTML = `<tr><td colspan="7" class="empty">${data.running?'спредов не найдено (порог или пустые стаканы)':'сканер не запущен'}</td></tr>`;
+    return;
+  }
+  $('rows').innerHTML = visible.map(r=>`
+    <tr class="${r.best?'best':''}">
+      <td class="sym">${esc(r.symbol)}</td>
+      <td class="dir">buy <b>${esc(r.buy)}</b> → sell <b>${esc(r.sell)}</b></td>
+      <td class="edge ${r.level}">${fmt(r.net_edge_bps)}</td>
+      <td class="${r.estimated_profit>=0?'profit-pos':'profit-neg'}">${fmt(r.estimated_profit,4)}</td>
+      <td>${fmt(r.buy_price,6)} → ${fmt(r.sell_price,6)}</td>
+      <td>${fmt(r.quantity,6)}</td>
+      <td>${fmt(r.book_age_s,1)}</td>
+    </tr>`).join('');
+}
+
+async function refresh(){
+  try{
+    const data = await api('/api/snapshot');
+    renderRows(data);
+  }catch(e){ $('scanError').textContent = 'snapshot error: '+e.message; }
+}
+
+function restartPolling(){
+  clearInterval(pollTimer);
+  const ms = Math.max(2000, (session.poll_interval||5)*1000);
+  pollTimer = setInterval(refresh, ms);
+}
+
+async function loadSession(){
+  session = await api('/api/session');
+  $('pair').value = session.pair;
+  renderSession(); restartPolling(); refresh();
+}
+
+$('btnStart').onclick = async ()=>{
+  try{
+    session = await api('/api/session',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({pair:$('pair').value, poll_interval:Number($('poll').value)||5, max_symbols:Number($('maxSymbols').value)||0, start:true})});
+    renderSession(); restartPolling(); toast('Сканер запущен: '+session.symbols_count+' пар');
+  }catch(e){ toast('Ошибка: '+e.message); }
+};
+$('btnStop').onclick = async ()=>{
+  try{ session = await api('/api/scan/stop',{method:'POST'}); setBadge(); toast('Сканер остановлен'); }
+  catch(e){ toast('Ошибка: '+e.message); }
+};
+$('pair').onchange = ()=> buildFeeFields($('pair').value, session&&session.fees_default);
+$('onlySignals').onchange = refresh;
+
+$('btnCalc').onclick = async ()=>{
+  $('calcError').textContent=''; $('calcResults').innerHTML='<div class="empty">считаю…</div>';
+  const fees = {};
+  for(const ex in feeInputs){ const v=$('fee_'+ex).value; if(v!=='') fees[ex]=Number(v); }
+  try{
+    const data = await api('/api/calc',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({symbol:$('calcSymbol').value, notional:Number($('calcNotional').value)||100,
+        buffer_bps:Number($('calcBuffer').value)||0, fees})});
+    renderCalc(data);
+  }catch(e){ $('calcResults').innerHTML=''; $('calcError').textContent='Ошибка: '+e.message; }
+};
+
+function verdictCard(d, minEdge){
+  const cls = d.net_edge_bps>=minEdge ? 'ok' : (d.net_edge_bps>=0 ? 'low' : 'bad');
+  const label = d.net_edge_bps>=minEdge ? 'выше порога' : (d.net_edge_bps>=0 ? 'ниже порога' : 'убыточно');
+  const profitClass = d.net_profit>=0 ? 'profit-pos':'profit-neg';
+  return `<div class="card">
+    <h3>buy ${esc(d.buy)} <span class="arrow">→</span> sell ${esc(d.sell)}
+      <span class="verdict ${cls}">${label}</span></h3>
+    <div class="kv">
+      <span class="k">Исполнимый объём</span><span class="v">${fmt(d.quantity,6)}</span>
+      <span class="k">VWAP покупки</span><span class="v">${fmt(d.vwap_buy,6)}</span>
+      <span class="k">VWAP продажи</span><span class="v">${fmt(d.vwap_sell,6)}</span>
+      <span class="k">Затраты (с комиссией)</span><span class="v">${fmt(d.buy_cost_incl_fee,4)} USDT</span>
+      <span class="k">Выручка (после комиссии)</span><span class="v">${fmt(d.sell_proceeds_net_fee,4)} USDT</span>
+      <span class="k">Чистая прибыль</span><span class="v ${profitClass}">${fmt(d.net_profit,4)} USDT</span>
+      <span class="k">Net edge</span><span class="v ${d.net_edge_bps>=minEdge?'edge signal':(d.net_edge_bps>=0?'edge watch':'edge negative')}">${fmt(d.net_edge_bps)} bps</span>
+      <span class="k">Возраст стакана</span><span class="v">${fmt(d.book_age_s,1)} с</span>
+    </div>
+  </div>`;
+}
+
+function renderCalc(data){
+  const minEdge = session.settings.min_net_edge_bps;
+  let html = '';
+  if(data.empty_books && data.empty_books.length){
+    html += `<div class="err">Пустой стакан: ${esc(data.empty_books.join(', '))} — сделка неисполнима</div>`;
+  }
+  if(!data.directions || !data.directions.length){
+    html += `<div class="empty">Нет встречной ликвидности для номинала ${fmt(data.notional,2)} USDT</div>`;
+  } else {
+    html += data.directions.map(d=>verdictCard(d, minEdge)).join('');
+    if(data.implausible) html += `<div class="err">Внимание: edge аномально высок — вероятна неликвидность или stale-котировка</div>`;
+  }
+  html += `<div class="books"><table>
+    <thead><tr><th>Биржа</th><th>bid / ask (top)</th><th>Уровней в ответе</th></tr></thead><tbody>
+    ${Object.entries(data.books).map(([ex,b])=>`
+      <tr><td class="sym">${esc(ex)}</td>
+      <td><span class="bid">${b.bids[0]?fmt(b.bids[0][0],6):'—'}</span> / <span class="ask">${b.asks[0]?fmt(b.asks[0][0],6):'—'}</span></td>
+      <td>${b.bids.length} / ${b.asks.length}</td></tr>`).join('')}
+  </tbody></table></div>`;
+  $('calcResults').innerHTML = html;
+}
+
+loadSession().catch(e=>toast('Не удалось загрузить сессию: '+e.message));
+refresh();
+</script>
+</body>
+</html>
