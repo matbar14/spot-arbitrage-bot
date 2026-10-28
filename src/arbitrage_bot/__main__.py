@@ -183,6 +183,11 @@ def main(argv=None):
         asyncio.run(run(args.pair))
     except KeyboardInterrupt:
         logging.info("Остановлено пользователем. Открытые запросы закрыты.")
+    except RuntimeError as exc:
+        logging.error("%s", exc)
+        if "all" in str(exc).lower() and "unsupported pair" in str(exc).lower():
+            logging.error("подсказка: ARB_PAIR=all / --pair all поддерживается только веб-интерфейсом (python -m arbitrage_bot.web)")
+        sys.exit(2)
 
 
 if __name__ == "__main__":

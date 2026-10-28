@@ -122,6 +122,7 @@ tr.selected td{background:rgba(16,185,129,.12) !important}
     <h2>Живой сканер спредов</h2>
     <div class="toolbar">
       <input id="filter" placeholder="фильтр: BTC, PEPE…">
+      <label class="mini"><input type="checkbox" id="onlyProfit" checked> только прибыльные</label>
       <label class="mini"><input type="checkbox" id="onlySignals"> только сигналы</label>
       <span class="mini">клик по строке → расчёт в калькуляторе</span>
       <span class="mini" id="snapshotInfo"></span>
@@ -199,20 +200,32 @@ function renderSession(){
 
 function buildPairOptions(exchanges, currentPair){
   const list = Array.isArray(exchanges) && exchanges.length >= 2 ? exchanges : ['mexc','nonkyc','xeggex'];
-  for (const id of ['pairA','pairB']){
-    const sel = document.getElementById(id);
-    sel.innerHTML = list.map(ex=>`<option value="${esc(ex)}">${esc(ex.toUpperCase())}</option>`).join('');
+  const allMode = String(currentPair||'').toLowerCase() === 'all';
+  $('pairA').innerHTML = `<option value="all">ВСЕ СВЯЗКИ (all)</option>` +
+    list.map(ex=>`<option value="${esc(ex)}">${esc(ex.toUpperCase())}</option>`).join('');
+  $('pairB').innerHTML = list.map(ex=>`<option value="${esc(ex)}">${esc(ex.toUpperCase())}</option>`).join('');
+  if (allMode){ $('pairA').value = 'all'; }
+  else {
+    const parts = String(currentPair||'').split('-');
+    const has = v=>list.includes(v);
+    $('pairA').value = has(parts[0]) ? parts[0] : list[0];
+    $('pairB').value = has(parts[1]) ? parts[1] : (list[1]||list[0]);
   }
-  const parts = String(currentPair||'').split('-');
-  const has = v=>list.includes(v);
-  $('pairA').value = has(parts[0]) ? parts[0] : list[0];
-  $('pairB').value = has(parts[1]) ? parts[1] : (list[1]||list[0]);
+  syncPairUI();
 }
 
-function currentPair(){ return $('pairA').value + '-' + $('pairB').value; }
+function syncPairUI(){
+  const all = $('pairA').value === 'all';
+  $('pairB').style.display = all ? 'none' : '';
+  document.querySelector('.pair-arrow').style.display = all ? 'none' : '';
+}
+
+function currentPair(){ return $('pairA').value === 'all' ? 'all' : $('pairA').value + '-' + $('pairB').value; }
 
 function buildFeeFields(pair, defaults){
-  const exchanges = pair.split('-');
+  const exchanges = pair === 'all'
+    ? ((session && session.exchanges) || [])
+    : pair.split('-');
   feeInputs = {};
   $('feeFields').innerHTML = exchanges.map(ex=>{
     feeInputs[ex] = `fee_${ex}`;
@@ -225,19 +238,22 @@ function renderRows(data){
   const rows = data.rows||[];
   const filter = $('filter').value.trim().toUpperCase();
   const only = $('onlySignals').checked;
-  const visible = rows.filter(r => (!filter || r.symbol.includes(filter)) && (!only || r.level==='signal'));
+  const profitable = $('onlyProfit').checked;
+  const visible = rows.filter(r => (!filter || r.symbol.includes(filter))
+    && (!only || r.level==='signal')
+    && (!profitable || r.net_edge_bps > 0));
   $('stCycles').textContent = data.cycles != null ? data.cycles : 0;
   const best = rows.length ? rows[0] : null;
   $('stBest').textContent = best ? fmt(best.net_edge_bps)+' bps' : '—';
   $('stSignals').textContent = rows.filter(r=>r.level==='signal').length;
-  $('snapshotInfo').textContent = `обновлено ${new Date().toLocaleTimeString('ru-RU')} · строк: ${visible.length}/${rows.length}`;
+  $('snapshotInfo').textContent = `обновлено ${new Date().toLocaleTimeString('ru-RU')} · строк: ${visible.length}/${data.rows_total!=null?data.rows_total:rows.length}`;
   $('scanError').textContent = data.last_error || '';
   if(!visible.length){
-    $('rows').innerHTML = `<tr><td colspan="7" class="empty">${data.running?'спредов не найдено (порог или пустые стаканы)':'сканер не запущен'}</td></tr>`;
+    $('rows').innerHTML = `<tr><td colspan="7" class="empty">${data.running?'прибыльных спредов сейчас нет (фильтр, порог или пустые стаканы)':'сканер не запущен'}</td></tr>`;
     return;
   }
   $('rows').innerHTML = visible.map(r=>`
-    <tr class="${r.best?'best':''}" data-symbol="${esc(r.symbol)}">
+    <tr class="${r.best?'best':''}" data-symbol="${esc(r.symbol)}" data-buy="${esc(r.buy)}" data-sell="${esc(r.sell)}">
       <td class="sym">${esc(r.symbol)}</td>
       <td class="dir">buy <b>${esc(r.buy)}</b> → sell <b>${esc(r.sell)}</b></td>
       <td class="edge ${r.level}">${fmt(r.net_edge_bps)}</td>
@@ -251,7 +267,8 @@ function renderRows(data){
 
 async function refresh(){
   try{
-    const data = await api('/api/snapshot');
+    const minEdge = $('onlyProfit').checked ? '0' : '-1000000';
+    const data = await api('/api/snapshot?min_edge='+minEdge);
     renderRows(data);
     maybeAutoPull(data.rows||[], data.running);
   }catch(e){ $('scanError').textContent = 'snapshot error: '+e.message; }
@@ -280,11 +297,13 @@ $('btnStop').onclick = async ()=>{
   try{ session = await api('/api/scan/stop',{method:'POST'}); setBadge(); toast('Сканер остановлен'); }
   catch(e){ toast('Ошибка: '+e.message); }
 };
-$('pairA').onchange = ()=> buildFeeFields(currentPair(), session&&session.fees_default);
+$('pairA').onchange = ()=>{ syncPairUI(); buildFeeFields(currentPair(), session&&session.fees_default); };
 $('pairB').onchange = ()=> buildFeeFields(currentPair(), session&&session.fees_default);
 $('onlySignals').onchange = refresh;
+$('onlyProfit').onchange = refresh;
 
 let calcBusy = false, lastAutoSymbol = null, lastAutoAt = 0;
+let calcPairBuy = null, calcPairSell = null;
 
 async function runCalc(){
   const symbol = $('calcSymbol').value.trim();
@@ -296,7 +315,8 @@ async function runCalc(){
   try{
     const data = await api('/api/calc',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({symbol, notional:Number($('calcNotional').value)||100,
-        buffer_bps:Number($('calcBuffer').value)||0, fees})});
+        buffer_bps:Number($('calcBuffer').value)||0, fees,
+        buy: calcPairBuy || undefined, sell: calcPairSell || undefined})});
     renderCalc(data);
   }catch(e){ $('calcResults').innerHTML=''; $('calcError').textContent='Ошибка: '+e.message; }
   finally{ calcBusy = false; }
@@ -304,11 +324,14 @@ async function runCalc(){
 $('btnCalc').onclick = runCalc;
 $('calcNotional').addEventListener('change', ()=>{ if($('calcSymbol').value.trim()) runCalc(); });
 $('calcSymbol').addEventListener('keydown', e=>{ if(e.key==='Enter') runCalc(); });
+$('calcSymbol').addEventListener('input', ()=>{ calcPairBuy = calcPairSell = null; });
 
 document.querySelector('#rows').addEventListener('click', e=>{
   const tr = e.target.closest('tr[data-symbol]');
   if(!tr) return;
   $('calcSymbol').value = tr.dataset.symbol;
+  calcPairBuy = tr.dataset.buy || null;
+  calcPairSell = tr.dataset.sell || null;
   renderSelection();
   runCalc();
 });
@@ -336,7 +359,9 @@ function maybeAutoPull(rows, running){
   if(best.symbol !== lastAutoSymbol && now - lastAutoAt > 10000){
     lastAutoSymbol = best.symbol; lastAutoAt = now;
     $('calcSymbol').value = best.symbol;
-    toast(`Автоподтягивание: ${best.symbol} — ${fmt(best.net_edge_bps)} bps`);
+    calcPairBuy = best.buy || null;
+    calcPairSell = best.sell || null;
+    toast(`Автоподтягивание: ${best.symbol} ${best.buy||''}→${best.sell||''} — ${fmt(best.net_edge_bps)} bps`);
     runCalc();
   }
 }

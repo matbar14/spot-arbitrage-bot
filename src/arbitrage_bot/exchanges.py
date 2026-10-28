@@ -37,6 +37,13 @@ EXCHANGE_REGISTRY: dict[str, dict[str, Any]] = {
 def supported_exchange_ids() -> tuple[str, ...]:
     return tuple(sorted(EXCHANGE_REGISTRY))
 
+def usable_exchange_ids() -> tuple[str, ...]:
+    """Registered exchanges with an actually available adapter."""
+    return tuple(sorted(
+        exchange_id for exchange_id, spec in EXCHANGE_REGISTRY.items()
+        if spec.get("factory") is not None
+    ))
+
 def _coerce_book_limit(spec: dict[str, Any], limit: int) -> int:
     """Clamp the requested depth size to what the venue actually accepts.
 
@@ -102,6 +109,26 @@ class PublicMarketData:
                 available.append(symbol)
         available.sort()
         return tuple(available[:maximum] if maximum > 0 else available)
+
+    def union_symbols(self, quote: str, minimum_venues: int = 2, maximum: int = 0) -> dict[str, tuple[str, ...]]:
+        """Symbols quoted in `quote` actively listed on at least `minimum_venues` venues.
+
+        Returns an ordered {symbol: (venue, ...)} map — the universe for the
+        web scanner's all-linkages mode.
+        """
+        holder: dict[str, list[str]] = {}
+        for exchange_id, client in self.clients.items():
+            for symbol, market in client.markets.items():
+                if market.get("spot") and market.get("active") is not False and market.get("quote") == quote:
+                    holder.setdefault(symbol, []).append(exchange_id)
+        usable = {
+            symbol: tuple(venues)
+            for symbol, venues in sorted(holder.items())
+            if len(venues) >= minimum_venues
+        }
+        if maximum > 0:
+            usable = dict(list(usable.items())[:maximum])
+        return usable
 
     def market_symbol(self, exchange: str, symbol: str) -> str:
         normalized = symbol.upper().replace("-", "/")

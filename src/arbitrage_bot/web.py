@@ -17,11 +17,12 @@ from aiohttp import web
 
 from .__main__ import parse_pair
 from .config import Settings
-from .exchanges import Book, PublicMarketData, supported_exchange_ids
+from .exchanges import Book, PublicMarketData, supported_exchange_ids, usable_exchange_ids
 from .fees import resolve_mexc_taker_fee, static_taker_fee_bps
 from .strategy import Opportunity, find_opportunities
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+SNAPSHOT_MAX_ROWS = 1500
 
 
 def _dec(value, default: Decimal | None = None) -> Decimal | None:
@@ -87,15 +88,22 @@ def book_view(book: Book, depth: int = 6) -> dict:
 
 
 class Session:
-    """Holds one exchange-pair context: market clients, symbols, fees, scan loop."""
+    """Holds one exchange-pair context: market clients, symbols, fees, scan loop.
+
+    In all-linkages mode (pair == "all") every usable registry venue is loaded
+    and every symbol is scanned across all venues listing it.
+    """
 
     def __init__(self, settings: Settings):
         self.settings = settings
-        self.exchange_ids: tuple[str, str] = parse_pair(settings.pair)
+        raw_pair = (settings.pair or "").strip().lower()
+        self.all_mode: bool = raw_pair == "all"
+        self.exchange_ids: tuple[str, ...] = tuple(usable_exchange_ids()) if self.all_mode else parse_pair(raw_pair)
         self.poll_interval = settings.poll_interval_seconds
         self.max_symbols = settings.max_symbols
         self.market: PublicMarketData | None = None
         self.active_symbols: tuple[str, ...] = ()
+        self.symbol_venues: dict[str, tuple[str, ...]] = {}
         self.fees_by_symbol: dict[str, dict[str, Decimal]] = {}
         self.task: asyncio.Task | None = None
         self.rows: list[dict] = []
@@ -106,7 +114,7 @@ class Session:
 
     @property
     def pair_name(self) -> str:
-        return "-".join(self.exchange_ids)
+        return "all" if self.all_mode else "-".join(self.exchange_ids)
 
     @property
     def running(self) -> bool:
@@ -116,7 +124,9 @@ class Session:
         async with self._lock:
             await self._stop_task()
             if pair:
-                self.exchange_ids = parse_pair(pair)
+                normalized = str(pair).strip().lower()
+                self.all_mode = normalized == "all"
+                self.exchange_ids = tuple(usable_exchange_ids()) if self.all_mode else parse_pair(normalized)
             if poll_interval and poll_interval > 0:
                 self.poll_interval = poll_interval
             if max_symbols is not None:
@@ -135,24 +145,36 @@ class Session:
 
     async def _load_symbols_and_fees(self) -> None:
         assert self.market is not None
+        quote = self.settings.quote_currency
+        venues_by_symbol: dict[str, tuple[str, ...]] = {}
         if self.settings.symbols == ("ALL",):
-            self.active_symbols = self.market.common_symbols(self.exchange_ids, self.settings.quote_currency, self.max_symbols)
+            if self.all_mode:
+                venues_by_symbol = self.market.union_symbols(quote, 2, self.max_symbols)
+            else:
+                for symbol in self.market.common_symbols(self.exchange_ids, quote, self.max_symbols):
+                    venues_by_symbol[symbol] = self.exchange_ids
         else:
-            resolved = []
             for symbol in self.settings.symbols:
-                try:
-                    for exchange in self.exchange_ids:
-                        self.market.market_symbol(exchange, symbol)
-                    resolved.append(self.market.market_symbol(self.exchange_ids[0], symbol))
-                except ValueError:
-                    continue
-            self.active_symbols = tuple(resolved)
-        if not self.active_symbols:
-            raise RuntimeError("none of the configured symbols is active on both exchanges")
+                normalized = symbol.upper().replace("-", "/")
+                if "/" not in normalized:
+                    normalized = f"{normalized[:-4]}/{normalized[-4:]}"
+                venues = []
+                for exchange in self.exchange_ids:
+                    try:
+                        self.market.market_symbol(exchange, normalized)
+                        venues.append(exchange)
+                    except ValueError:
+                        continue
+                if len(venues) >= 2:
+                    venues_by_symbol[normalized] = tuple(venues)
+        if not venues_by_symbol:
+            raise RuntimeError("none of the configured symbols is active on at least two exchanges")
+        self.symbol_venues = venues_by_symbol
+        self.active_symbols = tuple(venues_by_symbol)
         fees = {}
-        for symbol in self.active_symbols:
+        for symbol, venues in venues_by_symbol.items():
             values = {}
-            for exchange in self.exchange_ids:
+            for exchange in venues:
                 if exchange == "mexc":
                     values[exchange] = await resolve_mexc_taker_fee(
                         self.market.client(exchange), self.market.market_symbol(exchange, symbol),
@@ -167,35 +189,52 @@ class Session:
     async def scan_once(self) -> None:
         assert self.market is not None
         budget = min(Decimal(str(self.settings.max_notional_quote)), Decimal(str(self.settings.max_slice_notional)))
+        cap = Decimal(str(self.settings.max_net_edge_bps))
+        buffer = Decimal(str(self.settings.slippage_buffer_bps))
         rows: list[dict] = []
         errors: list[str] = []
-        for symbol in self.active_symbols:
+        processed = 0
+        for symbol, venues in self.symbol_venues.items():
             try:
-                books = await asyncio.gather(
-                    *(self.market.fetch(exchange, symbol, self.settings.orderbook_limit) for exchange in self.exchange_ids)
+                results = await asyncio.gather(
+                    *(self.market.fetch(exchange, symbol, self.settings.orderbook_limit) for exchange in venues),
+                    return_exceptions=True,
                 )
-                if any(not book.bids or not book.asks for book in books):
-                    continue
-                opportunities = find_opportunities(
-                    books[0], books[1], budget, self.fees_by_symbol[symbol],
-                    Decimal(str(self.settings.slippage_buffer_bps)), self.settings.protective_price_level,
-                )
-                plausible = [opportunity for opportunity in opportunities if opportunity.net_edge_bps <= Decimal(str(self.settings.max_net_edge_bps))]
-                if not plausible:
-                    continue
-                best_edge = max(opportunity.net_edge_bps for opportunity in plausible)
-                now = datetime.now(timezone.utc)
-                book_age = max((now - book.received_at).total_seconds() for book in books)
-                for opportunity in plausible:
-                    rows.append(row_from_opportunity(
-                        opportunity, best=opportunity.net_edge_bps == best_edge,
-                        min_edge_bps=self.settings.min_net_edge_bps, book_age_s=book_age,
-                    ))
+                books = [book for book in results if isinstance(book, Book) and book.bids and book.asks]
+                fees = self.fees_by_symbol.get(symbol, {})
+                fresh: list[Opportunity] = []
+                if len(books) >= 2:
+                    for index in range(len(books) - 1):
+                        for other in books[index + 1:]:
+                            pair_fees = {
+                                book.exchange: fees[book.exchange]
+                                for book in (books[index], other) if book.exchange in fees
+                            }
+                            if len(pair_fees) < 2:
+                                continue
+                            for opportunity in find_opportunities(
+                                books[index], other, budget, pair_fees, buffer,
+                                self.settings.protective_price_level,
+                            ):
+                                if opportunity.net_edge_bps <= cap:
+                                    fresh.append(opportunity)
+                if fresh:
+                    now = datetime.now(timezone.utc)
+                    book_age = max((now - book.received_at).total_seconds() for book in books)
+                    best_edge = max(opportunity.net_edge_bps for opportunity in fresh)
+                    for opportunity in fresh:
+                        rows.append(row_from_opportunity(
+                            opportunity, best=opportunity.net_edge_bps == best_edge,
+                            min_edge_bps=self.settings.min_net_edge_bps, book_age_s=book_age,
+                        ))
             except Exception as exc:
                 errors.append(f"{symbol}: {exc}")
-            # incremental update: the UI sees rows as the cycle progresses
-            rows.sort(key=lambda row: row["net_edge_bps"], reverse=True)
-            self.rows = rows
+            processed += 1
+            if processed % 25 == 0:
+                rows.sort(key=lambda row: row["net_edge_bps"], reverse=True)
+                self.rows = rows
+        rows.sort(key=lambda row: row["net_edge_bps"], reverse=True)
+        self.rows = rows
         self.cycles += 1
         self.last_error = "; ".join(errors[:3]) if errors else None
 
@@ -243,11 +282,12 @@ class Session:
         s = self.settings
         return {
             "pair": self.pair_name,
-            "exchanges": list(supported_exchange_ids()),
+            "all_mode": self.all_mode,
+            "exchanges": list(usable_exchange_ids()),
             "running": self.running,
             "poll_interval": self.poll_interval,
             "max_symbols": self.max_symbols,
-            "symbols": list(self.active_symbols),
+            "symbols": list(self.active_symbols[:500]),
             "symbols_count": len(self.active_symbols),
             "cycles": self.cycles,
             "uptime_s": round(time.monotonic() - self.started_at, 1),
@@ -280,22 +320,35 @@ class Session:
         symbol = str(payload.get("symbol", "")).strip().upper().replace("-", "/")
         if "/" not in symbol:
             symbol = f"{symbol[:-4]}/{symbol[-4:]}"
-        normalized = self.market.market_symbol(self.exchange_ids[0], symbol)
+        buy = str(payload.get("buy") or self.exchange_ids[0]).strip().lower()
+        sell = str(payload.get("sell") or self.exchange_ids[1]).strip().lower()
+        if buy == sell:
+            raise ValueError("buy and sell exchanges must differ")
+        for exchange in (buy, sell):
+            if exchange not in self.market.clients:
+                raise ValueError(f"unsupported exchange {exchange}")
+        pair_ids = (buy, sell)
+        normalized = self.market.market_symbol(buy, symbol)
         notional = _dec(payload.get("notional"), Decimal("100"))
         if notional is None or notional <= 0:
             raise ValueError("notional must be a positive number")
         buffer_bps = _dec(payload.get("buffer_bps"), Decimal(str(self.settings.slippage_buffer_bps)))
-        fees = dict(self.fees_by_symbol.get(normalized, {}))
         overrides = payload.get("fees") or {}
-        for exchange in self.exchange_ids:
+        fees = {}
+        for exchange in pair_ids:
             override = _dec(overrides.get(exchange))
             if override is not None and override >= 0:
                 fees[exchange] = override
-        missing = [exchange for exchange in self.exchange_ids if exchange not in fees]
-        if missing:
-            raise ValueError(f"no fee data for {', '.join(missing)}")
+            elif exchange == "mexc":
+                fees[exchange] = await resolve_mexc_taker_fee(
+                    self.market.client(exchange), self.market.market_symbol(exchange, normalized),
+                    Decimal(str(self.settings.mexc_fee_bps)) if self.settings.mexc_fee_bps is not None else None,
+                    live=False, auto_fetch=self.settings.auto_fetch_mexc_fee,
+                )
+            else:
+                fees[exchange] = static_taker_fee_bps(self.settings, exchange)
         books = await asyncio.gather(
-            *(self.market.fetch(exchange, normalized, self.settings.orderbook_limit) for exchange in self.exchange_ids)
+            *(self.market.fetch(exchange, normalized, self.settings.orderbook_limit) for exchange in pair_ids)
         )
         ages = {book.exchange: (datetime.now(timezone.utc) - book.received_at).total_seconds() for book in books}
         opportunities = find_opportunities(
@@ -306,6 +359,7 @@ class Session:
         cap = Decimal(str(self.settings.max_net_edge_bps))
         return {
             "symbol": normalized,
+            "pair": f"{buy}-{sell}",
             "notional": _num(notional, 2),
             "buffer_bps": _num(buffer_bps, 2),
             "fees": {exchange: _num(value, 2) for exchange, value in fees.items()},
@@ -359,12 +413,24 @@ async def stop_scan(request: web.Request) -> web.Response:
 
 async def get_snapshot(request: web.Request) -> web.Response:
     session: Session = request.app["session"]
+    try:
+        min_edge = float(request.query.get("min_edge", ""))
+    except ValueError:
+        min_edge = None
+    total = len(session.rows)
+    rows = session.rows
+    if min_edge is not None:
+        rows = [row for row in rows if row["net_edge_bps"] >= min_edge]
+    rows = rows[:SNAPSHOT_MAX_ROWS]
     return web.json_response({
         "pair": session.pair_name,
+        "all_mode": session.all_mode,
         "running": session.running,
         "cycles": session.cycles,
         "last_error": session.last_error,
-        "rows": session.rows,
+        "rows": rows,
+        "rows_total": total,
+        "rows_shown": len(rows),
     })
 
 
@@ -403,7 +469,7 @@ def main(argv=None) -> None:
     parser = argparse.ArgumentParser(description="Web UI for the spot arbitrage bot (monitoring and sizing only)")
     parser.add_argument("--host", default=os.getenv("WEB_HOST", "127.0.0.1"))
     parser.add_argument("--port", type=int, default=int(os.getenv("WEB_PORT", "8788")))
-    parser.add_argument("--pair", choices=None, help="exchange pair, e.g. mexc-xeggex (overrides ARB_PAIR)")
+    parser.add_argument("--pair", choices=None, help="exchange pair, e.g. mexc-xeggex, or 'all' (overrides ARB_PAIR)")
     parser.add_argument("--no-browser", action="store_true", help="do not open the browser automatically")
     args = parser.parse_args(argv)
 
