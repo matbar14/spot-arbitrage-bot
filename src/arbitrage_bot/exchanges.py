@@ -21,16 +21,16 @@ EXCHANGE_REGISTRY: dict[str, dict[str, Any]] = {
     "mexc":     {"factory": ccxt.mexc,                        "default_fee_bps": Decimal("5")},
     "nonkyc":   {"factory": NonKycExchange,                   "default_fee_bps": Decimal("20")},
     "xeggex":   {"factory": XeggexExchange,                   "default_fee_bps": Decimal("20")},
-    "xt":       {"factory": getattr(ccxt, "xt", None),        "default_fee_bps": Decimal("10")},
+    "xt":       {"factory": getattr(ccxt, "xt", None),        "default_fee_bps": Decimal("20")},
     "lbank":    {"factory": getattr(ccxt, "lbank", None),     "default_fee_bps": Decimal("10")},
     "bingx":    {"factory": getattr(ccxt, "bingx", None),     "default_fee_bps": Decimal("10")},
     "htx":      {"factory": getattr(ccxt, "htx", None),       "default_fee_bps": Decimal("20")},
     "gate":     {"factory": getattr(ccxt, "gate", None),      "default_fee_bps": Decimal("20")},
-    "bitrue":   {"factory": getattr(ccxt, "bitrue", None),    "default_fee_bps": Decimal("30")},
+    "bitrue":   {"factory": getattr(ccxt, "bitrue", None),    "default_fee_bps": Decimal("9.8")},
     "whitebit": {"factory": getattr(ccxt, "whitebit", None),  "default_fee_bps": Decimal("10")},
     "kucoin":   {"factory": getattr(ccxt, "kucoin", None),    "default_fee_bps": Decimal("10"), "book_limits": (20, 100)},
     "bybit":    {"factory": getattr(ccxt, "bybit", None),     "default_fee_bps": Decimal("10")},
-    "bitget":   {"factory": getattr(ccxt, "bitget", None),    "default_fee_bps": Decimal("10")},
+    "bitget":   {"factory": getattr(ccxt, "bitget", None),    "default_fee_bps": Decimal("10")},  # per-market: majors 20, alts 10
 }
 
 

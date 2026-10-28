@@ -26,7 +26,7 @@ python -m arbitrage_bot --pair mexc-xeggex
 
 Доступны `mexc-nonkyc` (по умолчанию), `mexc-xeggex` и `nonkyc-xeggex`. Аргумент `--pair` имеет приоритет над `ARB_PAIR` в `.env`.
 
-Поддерживаемые биржи (регистр не важен, любая комбинация двух разных): `mexc`, `nonkyc`, `xeggex`, `xt`, `lbank`, `bingx`, `htx`, `gate`, `bitrue`, `whitebit`, `kucoin`, `bybit`, `bitget`. Например `--pair mexc-xt` или `--pair whitebit-nonkyc`. NonKYC и XeggeX работают через собственные адаптеры, остальные — через ccxt. Комиссия taker по умолчанию берётся из встроенной консервативной оценки и переопределяется переменной `<ID>_FEE_BPS` (например `BITRUE_FEE_BPS=30`); API-ключи для live задаются в том же шаблоне `<ID>_API_KEY` / `<ID>_SECRET`.
+Поддерживаемые биржи (регистр не важен, любая комбинация двух разных): `mexc`, `nonkyc`, `xeggex`, `xt`, `lbank`, `bingx`, `htx`, `gate`, `bitrue`, `whitebit`, `kucoin`, `bybit`, `bitget`. Например `--pair mexc-xt` или `--pair whitebit-nonkyc`. NonKYC и XeggeX работают через собственные адаптеры, остальные — через ccxt. Комиссия taker по умолчанию берётся из встроенной консервативной оценки и переопределяется переменной `<ID>_FEE_BPS` (например `HTX_FEE_BPS=20`); API-ключи для live задаются в том же шаблоне `<ID>_API_KEY` / `<ID>_SECRET`. Дефолты сверены с метаданными рынков ccxt: Bitrue 9.8 bps (0.098%), Gate 20, XT 20, LBank/BingX/WhiteBit/KuCoin/Bybit/Bitget 10 (Bitget: мейджоры 20, альты 10), HTX 20, MEXC 5.
 
 Для XeggeX:
 
@@ -71,6 +71,7 @@ API интерфейса: `GET /api/session`, `POST /api/session`, `POST /api/sc
 
 ## Последние изменения
 
+- Уточнены дефолтные taker-комиссии по метаданным рынков ccxt: Bitrue 30 → 9.8 bps (0.098%), XT 10 → 20 bps; Gate подтверждён (20). Bitget: мейджоры 20 / альты 10 (в реестре 10).
 - В реестр добавлены KuCoin, Bybit и Bitget (taker 10 bps по умолчанию) — итого 13 бирж и 78 связок; крупные площадки с низкой комиссией как «продажная» сторона дешевле NonKYC (20 bps). Для KuCoin размер стакана автоматически приводится к допустимым API значениям (20/100 уровней).
 - Расширен список бирж: добавлены XT, LBank, BingX, HTX, Gate, Bitrue, WhiteBit (через ccxt); единый реестр бирж, любые связки из 10 площадок (например `mexc-xt`, `whitebit-nonkyc`), комиссии через `<ID>_FEE_BPS`, динамический выбор связки в веб-интерфейсе.
 - Добавлены скрипты мониторинга спредов (`scripts/monitor_spreads.py`, `scripts/depth_probe.py`): длительный сбор статистики по связкам и проверка кандидатов по глубине стаканов с учётом комиссий; оба работают в dry-run и только читают данные.

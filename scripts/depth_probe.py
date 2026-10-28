@@ -29,8 +29,8 @@ CANDIDATES = [
 ]
 SPEND_TARGETS = [25.0, 50.0, 100.0, 200.0]
 FEE = {"mexc": Decimal("0.0005"), "nonkyc": Decimal("0.002"), "xeggex": Decimal("0.002"),
-       "xt": Decimal("0.001"), "lbank": Decimal("0.001"), "bingx": Decimal("0.001"),
-       "htx": Decimal("0.002"), "gate": Decimal("0.002"), "bitrue": Decimal("0.003"),
+       "xt": Decimal("0.002"), "lbank": Decimal("0.001"), "bingx": Decimal("0.001"),
+       "htx": Decimal("0.002"), "gate": Decimal("0.002"), "bitrue": Decimal("0.00098"),
        "whitebit": Decimal("0.001"), "kucoin": Decimal("0.001"), "bybit": Decimal("0.001"),
        "bitget": Decimal("0.001")}
 LIMIT = 50

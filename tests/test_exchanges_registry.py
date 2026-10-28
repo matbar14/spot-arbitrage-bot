@@ -48,7 +48,8 @@ class RegistryTests(unittest.TestCase):
         settings = Settings()
         self.assertEqual(static_taker_fee_bps(settings, "nonkyc"), Decimal("20"))
         self.assertEqual(static_taker_fee_bps(settings, "xeggex"), Decimal("20"))
-        self.assertEqual(static_taker_fee_bps(settings, "xt"), Decimal("10"))
+        self.assertEqual(static_taker_fee_bps(settings, "xt"), Decimal("20"))
+        self.assertEqual(static_taker_fee_bps(settings, "bitrue"), Decimal("9.8"))
 
     def test_env_fee_override(self):
         os.environ["XT_FEE_BPS"] = "7.5"
