@@ -35,9 +35,9 @@ def log(message: str) -> None:
 
 
 async def main() -> None:
-    # Тестовый режим: разрешаем больше виртуальных сделок за цикл — каждая
+    # Тестовый режим: разрешаем больше виртуальных сделок за чанк — каждая
     # всё равно проходит полную перепроверку на свежих стаканах + кулдаун 300с.
-    web.PAPER_MAX_PER_CYCLE = 8
+    web.PAPER_MAX_PER_CHUNK = 8
 
     settings = Settings()
     session = Session(settings)

@@ -8,6 +8,7 @@ from decimal import Decimal
 from aiohttp.test_utils import TestClient, TestServer
 
 from arbitrage_bot.config import Settings
+from arbitrage_bot.exchanges import Book
 from arbitrage_bot.web import Session, create_app
 
 
@@ -166,11 +167,108 @@ class PaperExecutionTests(unittest.TestCase):
         asyncio.run(session._paper_execute([row]))
         self.assertEqual(session.paper_trades, [])  # кап max_net_edge_bps отсекает фантом
 
+    def test_implausible_edge_over_plausible_ceiling_rejected(self):
+        # «Подтверждённый» фантом на живых тикерах-двойниках (BEAM-класс):
+        # 2675 bps невозможно исполнить, хотя cap 5000 его пропускает.
+        session = make_session()
+        session.live_enabled = True
+        self.assertGreater(session.live_min_edge_bps, 0)
+        object.__setattr__(session.settings, "max_net_edge_bps", 5000.0)
+        row = {"symbol": "BEAM/USDT", "buy": "bitget", "sell": "mexc", "net_edge_bps": 2627}
+        session.calc = lambda payload: _async(calc_response(17.7, 2675))
+        asyncio.run(session._paper_execute([row]))
+        self.assertEqual(session.paper_trades, [])  # запредельный спред = фантом
+
+    def test_edge_under_plausible_ceiling_recorded(self):
+        session = make_session()
+        session.live_enabled = True
+        object.__setattr__(session.settings, "max_net_edge_bps", 5000.0)
+        row = {"symbol": "BTC/USDT", "buy": "mexc", "sell": "nonkyc", "net_edge_bps": 60}
+        session.calc = lambda payload: _async(calc_response(2.9, 550))
+        asyncio.run(session._paper_execute([row]))
+        self.assertEqual(len(session.paper_trades), 1)  # 550 bps ниже порога реализуемости — сделка записана
+
 
 def _async(value):
     async def inner():
         return value
     return inner()
+
+
+class FakeMarket:
+    """Универсальный рынок: две площадки со стабильным пут 100 → bid 102."""
+
+    def __init__(self):
+        self.fetches = 0
+
+    async def fetch(self, exchange: str, symbol: str, limit: int) -> Book:
+        self.fetches += 1
+        levels_buy = [(Decimal("100"), Decimal("2"))] * 4
+        levels_sell = [(Decimal("102"), Decimal("2"))] * 4
+        return Book(
+            exchange=exchange, symbol=symbol,
+            bids=levels_sell, asks=levels_buy,
+            received_at=datetime.now(timezone.utc),
+        )
+
+
+def make_scan_session(symbol_count: int) -> Session:
+    session = make_session()
+    symbols = tuple(f"SYM{i:03d}/USDT" for i in range(symbol_count))
+    session.symbol_venues = {symbol: ("mexc", "nonkyc") for symbol in symbols}
+    session.fees_by_symbol = {symbol: {"mexc": Decimal("5"), "nonkyc": Decimal("20")} for symbol in symbols}
+    for field, value in (
+        ("orderbook_limit", 10), ("max_notional_quote", 100.0), ("max_slice_notional", 10.0),
+        ("max_net_edge_bps", 5000.0), ("protective_price_level", 3),
+    ):
+        object.__setattr__(session.settings, field, value)  # frozen dataclass
+    session.market = FakeMarket()
+    return session
+
+
+class ScanChunkExecutionTests(unittest.TestCase):
+    """Бумажные сделки исполняются по мере скана, а не после полного прохода."""
+
+    def test_chunks_executed_mid_scan_and_tail(self):
+        session = make_scan_session(30)
+        session.live_enabled = True
+        calls: list[list[dict]] = []
+
+        async def spy_execute(chunk):
+            calls.append(list(chunk))
+
+        session._paper_execute = spy_execute
+        asyncio.run(session.scan_once())
+        self.assertEqual(session.cycles, 1)
+        # чанк после 25-й пары и хвост после 30-й (5 пар) — это два вызова
+        self.assertEqual([len(chunk) for chunk in calls], [50, 10])
+        self.assertEqual(len(session.rows), 60)
+        # промежуточный снапшот публиковался по чанкам — панель не ждала конца прохода
+        self.assertEqual(session.rows, sorted(session.rows, key=lambda r: r["net_edge_bps"], reverse=True))
+
+    def test_small_universe_executed_once_at_tail(self):
+        session = make_scan_session(3)
+        session.live_enabled = True
+        calls: list[list[dict]] = []
+
+        async def spy_execute(chunk):
+            calls.append(list(chunk))
+
+        session._paper_execute = spy_execute
+        asyncio.run(session.scan_once())
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(len(calls[0]), 6)
+
+    def test_disabled_live_skips_chunk_execution(self):
+        session = make_scan_session(30)
+        calls: list[list[dict]] = []
+
+        async def spy_execute(chunk):
+            calls.append(list(chunk))
+
+        session._paper_execute = spy_execute
+        asyncio.run(session.scan_once())
+        self.assertEqual(calls, [])
 
 
 class LiveStatsTests(unittest.TestCase):

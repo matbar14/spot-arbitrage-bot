@@ -26,7 +26,12 @@ STATIC_DIR = Path(__file__).resolve().parent / "static"
 SNAPSHOT_MAX_ROWS = 1500
 PAPER_TRADES_MAX = 400       # хвост истории бумажных сделок
 PAPER_COOLDOWN_S = 300       # пауза между повторными входами в тот же symbol|buy|sell
-PAPER_MAX_PER_CYCLE = 2      # максимум виртуальных сделок за один скан-цикл
+PAPER_MAX_PER_CHUNK = 2      # максимум виртуальных сделок за один чанк скана (25 пар)
+# Реальный исполнимый межбиржевой спред почти никогда не превышает ~1-2%: больше —
+# это тикер-двойники (BEAM на разных биржах — разные токены) и мёртвые рынки,
+# которые живут и после «свежей» перепроверки. Для бумажной торговли такие «сделки»
+# выше ~6% отбраковываются, иначе панель наполняется фантомным профитом.
+PAPER_PLAUSIBLE_EDGE_BPS = 600
 # Leveraged-токены (ADA3S, AAVE3L, BTC5L…) котируются на разных биржах по-разному
 # и не переносятся между площадками — их «спреды» нереализуемы, в бумажную торговлю
 # их не берём, иначе статистика раздувается фантомными +40% сделками.
@@ -209,6 +214,7 @@ class Session:
         rows: list[dict] = []
         errors: list[str] = []
         processed = 0
+        paper_chunk_start = 0  # сколько строк фронтира уже проверено бумаготорговлей
         for symbol, venues in self.symbol_venues.items():
             try:
                 results = await asyncio.gather(
@@ -248,13 +254,24 @@ class Session:
             if processed % 25 == 0:
                 rows.sort(key=lambda row: row["net_edge_bps"], reverse=True)
                 self.rows = rows
+                # Бумажные сделки исполняем на каждом чанке, не дожидаясь конца
+                # прохода: в all-режиме (тысячи пар) полный цикл занимает минуты,
+                # и лайв-панель иначе молчала бы весь первый проход.
+                if self.live_enabled:
+                    try:
+                        await self._paper_execute(rows[paper_chunk_start:])
+                    except Exception as exc:
+                        logging.debug("paper execution skipped: %s", exc)
+                paper_chunk_start = len(rows)
         rows.sort(key=lambda row: row["net_edge_bps"], reverse=True)
         self.rows = rows
         self.cycles += 1
         self.last_error = "; ".join(errors[:3]) if errors else None
-        if self.live_enabled and rows:
+        # Хвост прохода тоже исполняем, иначе universe < 25 пар торговала бы
+        # только со следующего цикла, а длинный проход терял последние сигналы.
+        if self.live_enabled and len(rows) > paper_chunk_start:
             try:
-                await self._paper_execute(rows)
+                await self._paper_execute(rows[paper_chunk_start:])
             except Exception as exc:
                 logging.debug("paper execution skipped: %s", exc)
 
@@ -418,18 +435,21 @@ class Session:
             self.live_started_at = time.monotonic() if self.live_enabled else None
 
     async def _paper_execute(self, rows: list[dict]) -> None:
-        """Re-check top signals on fresh books and record paper trades.
+        """Re-check fresh signals on fresh books and record paper trades.
 
         Every trade is validated against current depth for the configured
         capital (walk-based execution, same as the calculator) — a signal
         row alone is not enough: the spread must survive a fresh fetch.
+        Called with a chunk of scan rows (sorted by net edge, best first):
+        signals are traded as they are discovered, per scan chunk of 25
+        symbols and on the pass tail, not once per full pass.
         """
         candidates = [row for row in rows if row["net_edge_bps"] >= self.live_min_edge_bps]
         cap = float(self.settings.max_net_edge_bps)
         executed = 0
         now = time.monotonic()
         for row in candidates:
-            if executed >= PAPER_MAX_PER_CYCLE:
+            if executed >= PAPER_MAX_PER_CHUNK:
                 break
             key = f"{row['symbol']}|{row['buy']}|{row['sell']}"
             if now - self._trade_cooldowns.get(key, float("-inf")) < PAPER_COOLDOWN_S:
@@ -453,6 +473,7 @@ class Session:
                 direction is None
                 or direction["net_edge_bps"] < self.live_min_edge_bps
                 or direction["net_edge_bps"] > cap  # аномальный edge = фантом/неликвидность
+                or direction["net_edge_bps"] > PAPER_PLAUSIBLE_EDGE_BPS  # «подтверждённый» фантом (тикеры-двойники)
                 or not direction["net_profit"]
                 or direction["net_profit"] <= 0
                 or not direction.get("buy_cost_incl_fee")
